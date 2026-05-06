@@ -23,11 +23,15 @@ import {
   Settings,
   ShieldCheck,
   Truck,
+  UserCheck,
+  UserPlus,
+  Users,
   XCircle,
 } from 'lucide-react'
 import './App.css'
 
 type Role = 'admin' | 'pharmacist' | 'inventory' | 'viewer'
+type UserStatus = 'pending' | 'active' | 'suspended'
 type View =
   | 'dashboard'
   | 'medicines'
@@ -37,14 +41,20 @@ type View =
   | 'adjust'
   | 'reports'
   | 'audit'
+  | 'users'
   | 'settings'
 
 type User = {
   id: string
   name: string
   email: string
+  phone: string
   role: Role
-  password: string
+  status: UserStatus
+  passwordHash: string
+  createdAt: string
+  approvedAt?: string
+  approvedBy?: string
 }
 
 type Medicine = {
@@ -159,11 +169,12 @@ type StockRow = {
 }
 
 type ReportRow = Record<string, string | number>
+type AuthMode = 'login' | 'register' | 'setup'
 
-const STORAGE_KEY = 'pcn-nafdac-pharmacy-inventory-v1'
-const SESSION_KEY = 'pcn-nafdac-pharmacy-session-v1'
+const STORAGE_KEY = 'pcn-nafdac-pharmacy-inventory-v2'
+const SESSION_KEY = 'pcn-nafdac-pharmacy-session-v2'
 
-const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = [
+const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard; adminOnly?: boolean }> = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'medicines', label: 'Medicines', icon: Pill },
   { id: 'suppliers', label: 'Suppliers', icon: Truck },
@@ -172,7 +183,8 @@ const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard }> = 
   { id: 'adjust', label: 'Adjust/Returns', icon: RotateCcw },
   { id: 'reports', label: 'Reports', icon: FileText },
   { id: 'audit', label: 'Audit', icon: ShieldCheck },
-  { id: 'settings', label: 'Settings', icon: Settings },
+  { id: 'users', label: 'Users', icon: Users, adminOnly: true },
+  { id: 'settings', label: 'Settings', icon: Settings, adminOnly: true },
 ]
 
 const roleLabels: Record<Role, string> = {
@@ -180,6 +192,12 @@ const roleLabels: Record<Role, string> = {
   pharmacist: 'Pharmacist',
   inventory: 'Inventory Officer',
   viewer: 'Viewer/Auditor',
+}
+
+const statusLabels: Record<UserStatus, string> = {
+  pending: 'Pending approval',
+  active: 'Active',
+  suspended: 'Suspended',
 }
 
 const movementLabels: Record<LedgerType, string> = {
@@ -210,207 +228,15 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
-function createSeedData(): Database {
-  const users: User[] = [
-    { id: 'usr_admin', name: 'Amina Bello', email: 'admin@pharmacy.local', role: 'admin', password: 'admin123' },
-    {
-      id: 'usr_pharm',
-      name: 'Dr. Chinedu Okafor',
-      email: 'pharmacist@pharmacy.local',
-      role: 'pharmacist',
-      password: 'pharm123',
-    },
-    {
-      id: 'usr_store',
-      name: 'Tola Adeyemi',
-      email: 'inventory@pharmacy.local',
-      role: 'inventory',
-      password: 'stock123',
-    },
-    { id: 'usr_view', name: 'Compliance Viewer', email: 'viewer@pharmacy.local', role: 'viewer', password: 'view123' },
-  ]
-
-  const medicines: Medicine[] = [
-    {
-      id: 'med_para',
-      sku: 'MED-001',
-      brandName: 'Paracure',
-      genericName: 'Paracetamol',
-      form: 'Tablet',
-      strength: '500mg',
-      unit: 'Blister',
-      category: 'Analgesic',
-      manufacturer: 'Lagos Pharma Ltd',
-      nafdacNumber: 'A4-1234',
-      barcodes: ['6150001000012', 'MED001'],
-      reorderLevel: 80,
-      active: true,
-    },
-    {
-      id: 'med_amox',
-      sku: 'MED-002',
-      brandName: 'Amoxilite',
-      genericName: 'Amoxicillin',
-      form: 'Capsule',
-      strength: '500mg',
-      unit: 'Capsule',
-      category: 'Antibiotic',
-      manufacturer: 'WestCare Generics',
-      nafdacNumber: 'B7-7781',
-      barcodes: ['6150001000029', 'MED002'],
-      reorderLevel: 120,
-      active: true,
-    },
-    {
-      id: 'med_ors',
-      sku: 'MED-003',
-      brandName: 'HydraLife ORS',
-      genericName: 'Oral Rehydration Salts',
-      form: 'Sachet',
-      strength: '20.5g',
-      unit: 'Sachet',
-      category: 'Electrolyte',
-      manufacturer: 'HealthMix Nigeria',
-      nafdacNumber: 'C2-3102',
-      barcodes: ['6150001000036', 'MED003'],
-      reorderLevel: 60,
-      active: true,
-    },
-  ]
-
-  const suppliers: Supplier[] = [
-    {
-      id: 'sup_prime',
-      name: 'PrimeMed Distributors',
-      contact: '+234 801 000 1111',
-      address: '12 Broad Street, Lagos',
-      licenseRef: 'PCN-SUP-0091',
-      active: true,
-    },
-    {
-      id: 'sup_north',
-      name: 'NorthBridge Pharma Supply',
-      contact: '+234 803 555 7788',
-      address: 'Plot 18, Wuse II, Abuja',
-      licenseRef: 'PCN-SUP-0324',
-      active: true,
-    },
-  ]
-
-  const batches: Batch[] = [
-    {
-      id: 'bat_para_a',
-      medicineId: 'med_para',
-      supplierId: 'sup_prime',
-      batchNumber: 'PAR-26-A1',
-      expiryDate: '2026-08-28',
-      unitCost: 95,
-      sellingPrice: 150,
-      receivedDate: '2026-04-28',
-      location: 'Shelf A1',
-      branchId: 'main',
-    },
-    {
-      id: 'bat_amox_a',
-      medicineId: 'med_amox',
-      supplierId: 'sup_north',
-      batchNumber: 'AMX-26-04',
-      expiryDate: '2027-01-15',
-      unitCost: 220,
-      sellingPrice: 350,
-      receivedDate: '2026-04-23',
-      location: 'Shelf B2',
-      branchId: 'main',
-    },
-    {
-      id: 'bat_ors_a',
-      medicineId: 'med_ors',
-      supplierId: 'sup_prime',
-      batchNumber: 'ORS-25-Z9',
-      expiryDate: '2026-06-18',
-      unitCost: 70,
-      sellingPrice: 120,
-      receivedDate: '2026-04-12',
-      location: 'Shelf C1',
-      branchId: 'main',
-    },
-  ]
-
-  const ledger: LedgerEntry[] = [
-    {
-      id: 'led_1',
-      medicineId: 'med_para',
-      batchId: 'bat_para_a',
-      type: 'stock-in',
-      quantity: 240,
-      reason: 'Opening stock',
-      reference: 'OPENING',
-      userId: 'usr_admin',
-      createdAt: '2026-04-28T09:10:00.000Z',
-    },
-    {
-      id: 'led_2',
-      medicineId: 'med_para',
-      batchId: 'bat_para_a',
-      type: 'stock-out',
-      quantity: -42,
-      reason: 'Dispense',
-      reference: 'ISS-1001',
-      userId: 'usr_pharm',
-      createdAt: '2026-05-02T13:15:00.000Z',
-    },
-    {
-      id: 'led_3',
-      medicineId: 'med_amox',
-      batchId: 'bat_amox_a',
-      type: 'stock-in',
-      quantity: 180,
-      reason: 'Opening stock',
-      reference: 'OPENING',
-      userId: 'usr_admin',
-      createdAt: '2026-04-23T09:00:00.000Z',
-    },
-    {
-      id: 'led_4',
-      medicineId: 'med_ors',
-      batchId: 'bat_ors_a',
-      type: 'stock-in',
-      quantity: 75,
-      reason: 'Opening stock',
-      reference: 'OPENING',
-      userId: 'usr_admin',
-      createdAt: '2026-04-12T10:00:00.000Z',
-    },
-    {
-      id: 'led_5',
-      medicineId: 'med_ors',
-      batchId: 'bat_ors_a',
-      type: 'stock-out',
-      quantity: -22,
-      reason: 'Internal issue',
-      reference: 'WARD-12',
-      userId: 'usr_store',
-      createdAt: '2026-05-05T16:35:00.000Z',
-    },
-  ]
-
+function createEmptyDatabase(): Database {
   return {
-    users,
-    medicines,
-    suppliers,
-    batches,
-    ledger,
+    users: [],
+    medicines: [],
+    suppliers: [],
+    batches: [],
+    ledger: [],
     receipts: [],
-    auditLogs: [
-      {
-        id: 'aud_seed',
-        userId: 'usr_admin',
-        action: 'Seeded demo pharmacy inventory database',
-        entity: 'system',
-        entityId: 'seed',
-        createdAt: nowIso(),
-      },
-    ],
+    auditLogs: [],
     settings: {
       pharmacyName: 'Pharmacy Inventory',
       branchName: 'Main Branch',
@@ -418,6 +244,14 @@ function createSeedData(): Database {
       approvalThreshold: 25_000,
     },
   }
+}
+
+async function hashPassword(password: string) {
+  const bytes = new TextEncoder().encode(password)
+  const hash = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(hash))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
 }
 
 function usePersistentState<T>(key: string, initialValue: T | (() => T)) {
@@ -493,32 +327,38 @@ function exportCsv(filename: string, rows: ReportRow[]) {
   URL.revokeObjectURL(url)
 }
 
+type AppCommit = (
+  action: string,
+  entity: string,
+  entityId: string,
+  updater: (draft: Database, actorId: string) => void,
+  before?: unknown,
+  after?: unknown,
+) => void
+
 function App() {
-  const [db, setDb] = usePersistentState<Database>(STORAGE_KEY, createSeedData)
+  const [db, setDb] = usePersistentState<Database>(STORAGE_KEY, createEmptyDatabase)
   const [sessionUserId, setSessionUserId] = usePersistentState<string | null>(SESSION_KEY, null)
   const [activeView, setActiveView] = useState<View>('dashboard')
   const [notice, setNotice] = useState('')
 
-  const currentUser = db.users.find((user) => user.id === sessionUserId) ?? null
+  const currentUser = db.users.find((user) => user.id === sessionUserId && user.status === 'active') ?? null
   const stockRows = useMemo(() => getStockRows(db), [db])
   const stockTotals = useMemo(() => aggregateMedicineStock(stockRows), [stockRows])
   const canWrite = currentUser ? currentUser.role !== 'viewer' : false
   const canAdjust = currentUser ? currentUser.role === 'admin' || currentUser.role === 'pharmacist' : false
   const canAdmin = currentUser?.role === 'admin'
 
+  useEffect(() => {
+    if (sessionUserId && !currentUser) setSessionUserId(null)
+  }, [currentUser, sessionUserId, setSessionUserId])
+
   function flash(message: string) {
     setNotice(message)
     window.setTimeout(() => setNotice(''), 2800)
   }
 
-  function commit(
-    action: string,
-    entity: string,
-    entityId: string,
-    updater: (draft: Database, actorId: string) => void,
-    before?: unknown,
-    after?: unknown,
-  ) {
+  function commit(action: string, entity: string, entityId: string, updater: (draft: Database, actorId: string) => void, before?: unknown, after?: unknown) {
     if (!currentUser) return
     setDb((previous) => {
       const next = clone(previous)
@@ -537,18 +377,89 @@ function App() {
     })
   }
 
-  function resetDemoData() {
-    localStorage.removeItem(STORAGE_KEY)
-    const seeded = createSeedData()
-    setDb(seeded)
-    setSessionUserId('usr_admin')
+  async function createFirstAdmin(input: SetupInput) {
+    const passwordHash = await hashPassword(input.password)
+    const adminId = id('usr')
+    setDb((previous) => {
+      const next = clone(previous)
+      next.users = [
+        {
+          id: adminId,
+          name: input.name.trim(),
+          email: input.email.trim().toLowerCase(),
+          phone: input.phone.trim(),
+          role: 'admin',
+          status: 'active',
+          passwordHash,
+          createdAt: nowIso(),
+          approvedAt: nowIso(),
+          approvedBy: adminId,
+        },
+      ]
+      next.settings.pharmacyName = input.pharmacyName.trim()
+      next.settings.branchName = input.branchName.trim()
+      next.auditLogs.unshift({
+        id: id('aud'),
+        userId: adminId,
+        action: 'Completed first-run pharmacy setup',
+        entity: 'system',
+        entityId: 'setup',
+        createdAt: nowIso(),
+      })
+      return next
+    })
+    setSessionUserId(adminId)
     setActiveView('dashboard')
-    flash('Demo data reset')
+  }
+
+  async function registerUser(input: RegisterInput) {
+    const email = input.email.trim().toLowerCase()
+    if (db.users.some((user) => user.email === email)) {
+      throw new Error('An account already exists for this email address')
+    }
+    const passwordHash = await hashPassword(input.password)
+    const user: User = {
+      id: id('usr'),
+      name: input.name.trim(),
+      email,
+      phone: input.phone.trim(),
+      role: 'viewer',
+      status: 'pending',
+      passwordHash,
+      createdAt: nowIso(),
+    }
+    setDb((previous) => ({
+      ...previous,
+      users: [...previous.users, user],
+      auditLogs: [
+        {
+          id: id('aud'),
+          userId: user.id,
+          action: 'Submitted staff access request',
+          entity: 'user',
+          entityId: user.id,
+          after: { name: user.name, email: user.email, status: user.status },
+          createdAt: nowIso(),
+        },
+        ...previous.auditLogs,
+      ],
+    }))
   }
 
   if (!currentUser) {
-    return <Login db={db} setSessionUserId={setSessionUserId} />
+    return (
+      <AuthScreen
+        hasUsers={db.users.length > 0}
+        pharmacyName={db.settings.pharmacyName}
+        createFirstAdmin={createFirstAdmin}
+        registerUser={registerUser}
+        users={db.users}
+        setSessionUserId={setSessionUserId}
+      />
+    )
   }
+
+  const pendingUsers = db.users.filter((user) => user.status === 'pending').length
 
   return (
     <div className="app-shell">
@@ -564,8 +475,8 @@ function App() {
         </div>
 
         <nav className="nav-list" aria-label="Primary navigation">
-          {views.map(({ id: viewId, label, icon: Icon }) => {
-            const disabled = viewId === 'settings' && !canAdmin
+          {views.map(({ id: viewId, label, icon: Icon, adminOnly }) => {
+            const disabled = adminOnly && !canAdmin
             return (
               <button
                 key={viewId}
@@ -577,6 +488,7 @@ function App() {
               >
                 <Icon size={18} />
                 <span>{label}</span>
+                {viewId === 'users' && pendingUsers > 0 && <b className="nav-badge">{pendingUsers}</b>}
               </button>
             )
           })}
@@ -596,88 +508,226 @@ function App() {
       <main className="workspace">
         <header className="topbar">
           <div>
-            <span className="eyebrow">PCN/NAFDAC-ready inventory MVP</span>
+            <span className="eyebrow">Operational inventory control</span>
             <h1>{views.find((view) => view.id === activeView)?.label}</h1>
           </div>
           <div className="topbar-actions">
             {notice && <span className="notice">{notice}</span>}
-            <button className="ghost-button" type="button" onClick={resetDemoData}>
-              <RotateCcw size={16} />
-              Reset demo
-            </button>
+            {canAdmin && pendingUsers > 0 && (
+              <button className="ghost-button" type="button" onClick={() => setActiveView('users')}>
+                <UserCheck size={16} />
+                {pendingUsers} pending
+              </button>
+            )}
           </div>
         </header>
 
         {activeView === 'dashboard' && <Dashboard db={db} stockRows={stockRows} stockTotals={stockTotals} setActiveView={setActiveView} />}
-        {activeView === 'medicines' && (
-          <Medicines db={db} stockTotals={stockTotals} canWrite={canWrite} commit={commit} flash={flash} />
-        )}
+        {activeView === 'medicines' && <Medicines db={db} stockTotals={stockTotals} canWrite={canWrite} commit={commit} flash={flash} />}
         {activeView === 'suppliers' && <Suppliers db={db} canWrite={canWrite} commit={commit} flash={flash} />}
         {activeView === 'receive' && <ReceiveStock db={db} canWrite={canWrite} commit={commit} flash={flash} />}
-        {activeView === 'issue' && (
-          <IssueStock db={db} stockRows={stockRows} canWrite={canWrite} currentUser={currentUser} commit={commit} flash={flash} />
-        )}
-        {activeView === 'adjust' && (
-          <Adjustments stockRows={stockRows} canAdjust={canAdjust} commit={commit} flash={flash} />
-        )}
+        {activeView === 'issue' && <IssueStock db={db} stockRows={stockRows} canWrite={canWrite} currentUser={currentUser} commit={commit} flash={flash} />}
+        {activeView === 'adjust' && <Adjustments stockRows={stockRows} canAdjust={canAdjust} commit={commit} flash={flash} />}
         {activeView === 'reports' && <Reports db={db} stockRows={stockRows} stockTotals={stockTotals} />}
         {activeView === 'audit' && <Audit db={db} />}
+        {activeView === 'users' && <UserManagement db={db} currentUser={currentUser} commit={commit} flash={flash} />}
         {activeView === 'settings' && <SettingsView db={db} canAdmin={canAdmin} commit={commit} flash={flash} />}
       </main>
     </div>
   )
 }
 
-function Login({ db, setSessionUserId }: { db: Database; setSessionUserId: (id: string) => void }) {
-  const [email, setEmail] = useState('admin@pharmacy.local')
-  const [password, setPassword] = useState('admin123')
-  const [error, setError] = useState('')
+type SetupInput = {
+  pharmacyName: string
+  branchName: string
+  name: string
+  email: string
+  phone: string
+  password: string
+}
 
-  function submit(event: FormEvent) {
+type RegisterInput = {
+  name: string
+  email: string
+  phone: string
+  password: string
+}
+
+function AuthScreen({
+  hasUsers,
+  pharmacyName,
+  createFirstAdmin,
+  registerUser,
+  users,
+  setSessionUserId,
+}: {
+  hasUsers: boolean
+  pharmacyName: string
+  createFirstAdmin: (input: SetupInput) => Promise<void>
+  registerUser: (input: RegisterInput) => Promise<void>
+  users: User[]
+  setSessionUserId: (id: string) => void
+}) {
+  const [mode, setMode] = useState<AuthMode>(hasUsers ? 'login' : 'setup')
+  const [error, setError] = useState('')
+  const [success, setSuccess] = useState('')
+  const activeMode: AuthMode = hasUsers ? mode : 'setup'
+
+  return (
+    <main className="login-screen">
+      <section className="login-panel auth-panel">
+        <div className="brand-mark large">
+          <Pill size={30} />
+        </div>
+        <div>
+          <span className="eyebrow">{activeMode === 'setup' ? 'First run setup' : pharmacyName}</span>
+          <h1>{activeMode === 'setup' ? 'Set up your pharmacy workspace' : 'Sign in to manage pharmacy inventory'}</h1>
+          <p>{activeMode === 'setup' ? 'Create the first administrator account before adding medicines, suppliers, and stock.' : 'Use your approved staff account. New staff can request access for admin review.'}</p>
+        </div>
+
+        {activeMode !== 'setup' && (
+          <div className="tabs auth-tabs">
+            <button className={activeMode === 'login' ? 'active' : ''} type="button" onClick={() => { setMode('login'); setError(''); setSuccess('') }}>Sign in</button>
+            <button className={activeMode === 'register' ? 'active' : ''} type="button" onClick={() => { setMode('register'); setError(''); setSuccess('') }}>Request access</button>
+          </div>
+        )}
+
+        {activeMode === 'setup' && <SetupForm createFirstAdmin={createFirstAdmin} setError={setError} />}
+        {activeMode === 'login' && <LoginForm users={users} setSessionUserId={setSessionUserId} setError={setError} setSuccess={setSuccess} />}
+        {activeMode === 'register' && <RegisterForm registerUser={registerUser} setError={setError} setSuccess={setSuccess} />}
+
+        {error && <div className="form-error">{error}</div>}
+        {success && <div className="form-success">{success}</div>}
+      </section>
+    </main>
+  )
+}
+
+function SetupForm({ createFirstAdmin, setError }: { createFirstAdmin: (input: SetupInput) => Promise<void>; setError: (message: string) => void }) {
+  const [form, setForm] = useState<SetupInput>({
+    pharmacyName: '',
+    branchName: 'Main Branch',
+    name: '',
+    email: '',
+    phone: '',
+    password: '',
+  })
+
+  async function submit(event: FormEvent) {
     event.preventDefault()
-    const user = db.users.find((item) => item.email.toLowerCase() === email.toLowerCase() && item.password === password)
-    if (!user) {
-      setError('Invalid email or password')
+    setError('')
+    if (form.password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      return
+    }
+    await createFirstAdmin(form)
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label className="full">Pharmacy name<input required value={form.pharmacyName} onChange={(event) => setForm({ ...form, pharmacyName: event.target.value })} autoFocus /></label>
+      <label className="full">Branch name<input required value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} /></label>
+      <label className="full">Admin full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+      <label>Email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
+      <label>Phone<input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label>
+      <label className="full">Password<input required type="password" minLength={8} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label>
+      <div className="form-actions full">
+        <button className="primary-button" type="submit">
+          <ShieldCheck size={17} />
+          Create admin workspace
+        </button>
+      </div>
+    </form>
+  )
+}
+
+function LoginForm({
+  users,
+  setSessionUserId,
+  setError,
+  setSuccess,
+}: {
+  users: User[]
+  setSessionUserId: (id: string) => void
+  setError: (message: string) => void
+  setSuccess: (message: string) => void
+}) {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setSuccess('')
+    const user = users.find((item) => item.email === email.trim().toLowerCase())
+    if (!user || user.passwordHash !== (await hashPassword(password))) {
+      setError('Invalid email or password.')
+      return
+    }
+    if (user.status === 'pending') {
+      setError('Your account is waiting for admin approval.')
+      return
+    }
+    if (user.status === 'suspended') {
+      setError('Your account is suspended. Contact an administrator.')
       return
     }
     setSessionUserId(user.id)
   }
 
   return (
-    <main className="login-screen">
-      <section className="login-panel">
-        <div className="brand-mark large">
-          <Pill size={30} />
-        </div>
-        <div>
-          <span className="eyebrow">Pharmacy Inventory</span>
-          <h1>Secure stock control for a single branch</h1>
-          <p>Track medicines by batch, expiry, barcode, supplier, and immutable ledger movements.</p>
-        </div>
-        <form className="stack" onSubmit={submit}>
-          <label>
-            Email
-            <input value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" />
-          </label>
-          <label>
-            Password
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />
-          </label>
-          {error && <div className="form-error">{error}</div>}
-          <button className="primary-button" type="submit">
-            <Lock size={17} />
-            Log in
-          </button>
-        </form>
-        <div className="credential-strip">
-          <strong>Demo users</strong>
-          <span>admin@pharmacy.local / admin123</span>
-          <span>pharmacist@pharmacy.local / pharm123</span>
-          <span>inventory@pharmacy.local / stock123</span>
-          <span>viewer@pharmacy.local / view123</span>
-        </div>
-      </section>
-    </main>
+    <form className="stack" onSubmit={submit}>
+      <label>Email<input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="username" /></label>
+      <label>Password<input required type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" /></label>
+      <button className="primary-button" type="submit">
+        <Lock size={17} />
+        Log in
+      </button>
+    </form>
+  )
+}
+
+function RegisterForm({
+  registerUser,
+  setError,
+  setSuccess,
+}: {
+  registerUser: (input: RegisterInput) => Promise<void>
+  setError: (message: string) => void
+  setSuccess: (message: string) => void
+}) {
+  const [form, setForm] = useState<RegisterInput>({ name: '', email: '', phone: '', password: '' })
+
+  async function submit(event: FormEvent) {
+    event.preventDefault()
+    setError('')
+    setSuccess('')
+    if (form.password.length < 8) {
+      setError('Password must be at least 8 characters.')
+      return
+    }
+    try {
+      await registerUser(form)
+      setForm({ name: '', email: '', phone: '', password: '' })
+      setSuccess('Access request submitted. An admin must approve and assign your role before you can sign in.')
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Unable to submit access request.')
+    }
+  }
+
+  return (
+    <form className="form-grid" onSubmit={submit}>
+      <label className="full">Full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+      <label>Email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
+      <label>Phone<input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label>
+      <label className="full">Password<input required type="password" minLength={8} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label>
+      <div className="form-actions full">
+        <button className="primary-button" type="submit">
+          <UserPlus size={17} />
+          Request access
+        </button>
+      </div>
+    </form>
   )
 }
 
@@ -697,6 +747,7 @@ function Dashboard({
   const expired = stockRows.filter((row) => row.quantity > 0 && row.status === 'expired')
   const costValue = stockRows.reduce((sum, row) => sum + Math.max(0, row.costValue), 0)
   const todayMovements = db.ledger.filter((entry) => entry.createdAt.slice(0, 10) === today()).length
+  const pendingUsers = db.users.filter((user) => user.status === 'pending').length
 
   return (
     <div className="page-grid">
@@ -706,13 +757,14 @@ function Dashboard({
         <Metric icon={AlertTriangle} label="Low stock items" value={lowStock.length} tone={lowStock.length ? 'warning' : 'good'} />
         <Metric icon={XCircle} label="Expired batches" value={expired.length} tone={expired.length ? 'danger' : 'good'} />
         <Metric icon={Activity} label="Movements today" value={todayMovements} />
+        <Metric icon={UserCheck} label="Pending users" value={pendingUsers} tone={pendingUsers ? 'warning' : 'good'} />
       </section>
 
       <section className="content-section">
         <div className="section-heading">
           <div>
             <h2>Operational Alerts</h2>
-            <p>Prioritized by low stock, expiry risk, and expired inventory.</p>
+            <p>Low stock, expiry risk, expired inventory, and access approvals.</p>
           </div>
           <button className="ghost-button" type="button" onClick={() => setActiveView('reports')}>
             <FileText size={16} />
@@ -720,32 +772,20 @@ function Dashboard({
           </button>
         </div>
         <div className="alert-list">
+          {pendingUsers > 0 && (
+            <AlertItem tone="warning" title={`${pendingUsers} staff access request${pendingUsers > 1 ? 's' : ''} pending`} detail="An admin should approve users and assign the correct role before they can sign in." />
+          )}
           {expired.map((row) => (
-            <AlertItem
-              key={row.batch.id}
-              tone="danger"
-              title={`${row.medicine.brandName} expired`}
-              detail={`${row.batch.batchNumber} has ${number.format(row.quantity)} ${row.medicine.unit} in ${row.batch.location}`}
-            />
+            <AlertItem key={row.batch.id} tone="danger" title={`${row.medicine.brandName} expired`} detail={`${row.batch.batchNumber} has ${number.format(row.quantity)} ${row.medicine.unit} in ${row.batch.location}`} />
           ))}
           {nearExpiry.slice(0, 5).map((row) => (
-            <AlertItem
-              key={row.batch.id}
-              tone="warning"
-              title={`${row.medicine.brandName} expires in ${row.daysToExpiry} days`}
-              detail={`${row.batch.batchNumber}, ${number.format(row.quantity)} ${row.medicine.unit} available`}
-            />
+            <AlertItem key={row.batch.id} tone="warning" title={`${row.medicine.brandName} expires in ${row.daysToExpiry} days`} detail={`${row.batch.batchNumber}, ${number.format(row.quantity)} ${row.medicine.unit} available`} />
           ))}
           {lowStock.map((medicine) => (
-            <AlertItem
-              key={medicine.id}
-              tone="info"
-              title={`${medicine.brandName} is at or below reorder level`}
-              detail={`Available: ${number.format(stockTotals.get(medicine.id) ?? 0)}. Reorder level: ${number.format(medicine.reorderLevel)}`}
-            />
+            <AlertItem key={medicine.id} tone="info" title={`${medicine.brandName} is at or below reorder level`} detail={`Available: ${number.format(stockTotals.get(medicine.id) ?? 0)}. Reorder level: ${number.format(medicine.reorderLevel)}`} />
           ))}
-          {!expired.length && !nearExpiry.length && !lowStock.length && (
-            <AlertItem tone="good" title="No active inventory alerts" detail="Stock levels and expiry windows are currently healthy." />
+          {!pendingUsers && !expired.length && !nearExpiry.length && !lowStock.length && (
+            <AlertItem tone="good" title="No active inventory alerts" detail="Stock levels, expiry windows, and access approvals are currently clear." />
           )}
         </div>
       </section>
@@ -754,7 +794,7 @@ function Dashboard({
         <div className="section-heading">
           <div>
             <h2>Batch Stock Snapshot</h2>
-            <p>FEFO sorting keeps the nearest expiry batches visible first.</p>
+            <p>FEFO sorting keeps nearest-expiry batches visible first.</p>
           </div>
         </div>
         <StockTable rows={stockRows.filter((row) => row.quantity > 0).slice(0, 8)} />
@@ -855,11 +895,8 @@ function Medicines({
       'medicine',
       record.id,
       (draft) => {
-        if (form.id) {
-          draft.medicines = draft.medicines.map((medicine) => (medicine.id === form.id ? record : medicine))
-        } else {
-          draft.medicines.unshift(record)
-        }
+        if (form.id) draft.medicines = draft.medicines.map((medicine) => (medicine.id === form.id ? record : medicine))
+        else draft.medicines.unshift(record)
       },
       before,
       record,
@@ -874,7 +911,7 @@ function Medicines({
         <div className="section-heading">
           <div>
             <h2>Medicine Catalog</h2>
-            <p>NAFDAC number, barcode, dosage form, reorder level, and manufacturer are captured here.</p>
+            <p>Capture NAFDAC number, barcode, dosage form, reorder level, and manufacturer.</p>
           </div>
           <div className="search-box">
             <Search size={16} />
@@ -895,26 +932,28 @@ function Medicines({
               </tr>
             </thead>
             <tbody>
-              {visible.map((medicine) => (
-                <tr key={medicine.id}>
-                  <td>
-                    <strong>{medicine.brandName}</strong>
-                    <span>{medicine.genericName} · {medicine.strength} · {medicine.form}</span>
-                  </td>
-                  <td>{medicine.sku}</td>
-                  <td>{medicine.nafdacNumber}</td>
-                  <td>{medicine.barcodes[0] ?? '-'}</td>
-                  <td>{number.format(stockTotals.get(medicine.id) ?? 0)}</td>
-                  <td>
-                    <span className={medicine.active ? 'pill good' : 'pill muted'}>{medicine.active ? 'Active' : 'Inactive'}</span>
-                  </td>
-                  <td>
-                    <button className="icon-button" type="button" onClick={() => edit(medicine)} title="Edit medicine" disabled={!canWrite}>
-                      <ClipboardList size={16} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {visible.length ? (
+                visible.map((medicine) => (
+                  <tr key={medicine.id}>
+                    <td>
+                      <strong>{medicine.brandName}</strong>
+                      <span>{medicine.genericName} / {medicine.strength} / {medicine.form}</span>
+                    </td>
+                    <td>{medicine.sku}</td>
+                    <td>{medicine.nafdacNumber || '-'}</td>
+                    <td>{medicine.barcodes[0] ?? '-'}</td>
+                    <td>{number.format(stockTotals.get(medicine.id) ?? 0)}</td>
+                    <td><span className={medicine.active ? 'pill good' : 'pill muted'}>{medicine.active ? 'Active' : 'Inactive'}</span></td>
+                    <td>
+                      <button className="icon-button" type="button" onClick={() => edit(medicine)} title="Edit medicine" disabled={!canWrite}>
+                        <ClipboardList size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr><td colSpan={7}>No medicine records yet. Add the pharmacy catalog before receiving stock.</td></tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -924,7 +963,7 @@ function Medicines({
         <div className="section-heading">
           <div>
             <h2>{form.id ? 'Edit Medicine' : 'Add Medicine'}</h2>
-            <p>Use comma-separated barcodes if a pack has multiple scan codes.</p>
+            <p>Use comma-separated barcodes if a product has multiple pack codes.</p>
           </div>
         </div>
         <form className="form-grid" onSubmit={submit}>
@@ -953,15 +992,6 @@ function Medicines({
   )
 }
 
-type AppCommit = (
-  action: string,
-  entity: string,
-  entityId: string,
-  updater: (draft: Database, actorId: string) => void,
-  before?: unknown,
-  after?: unknown,
-) => void
-
 function Suppliers({ db, canWrite, commit, flash }: { db: Database; canWrite: boolean; commit: AppCommit; flash: (message: string) => void }) {
   const [form, setForm] = useState({ id: '', name: '', contact: '', address: '', licenseRef: '', active: true })
 
@@ -989,24 +1019,28 @@ function Suppliers({ db, canWrite, commit, flash }: { db: Database; canWrite: bo
         <div className="section-heading">
           <div>
             <h2>Supplier Register</h2>
-            <p>Supplier license references are stored for compliance review.</p>
+            <p>Supplier license references support receiving traceability and compliance review.</p>
           </div>
         </div>
         <div className="supplier-grid">
-          {db.suppliers.map((supplier) => (
-            <article className="supplier-card" key={supplier.id}>
-              <Truck size={20} />
-              <div>
-                <strong>{supplier.name}</strong>
-                <span>{supplier.contact}</span>
-                <span>{supplier.address}</span>
-                <span>{supplier.licenseRef || 'No license reference'}</span>
-              </div>
-              <button className="icon-button" type="button" onClick={() => setForm(supplier)} disabled={!canWrite} title="Edit supplier">
-                <ClipboardList size={16} />
-              </button>
-            </article>
-          ))}
+          {db.suppliers.length ? (
+            db.suppliers.map((supplier) => (
+              <article className="supplier-card" key={supplier.id}>
+                <Truck size={20} />
+                <div>
+                  <strong>{supplier.name}</strong>
+                  <span>{supplier.contact || 'No contact recorded'}</span>
+                  <span>{supplier.address || 'No address recorded'}</span>
+                  <span>{supplier.licenseRef || 'No license reference'}</span>
+                </div>
+                <button className="icon-button" type="button" onClick={() => setForm(supplier)} disabled={!canWrite} title="Edit supplier">
+                  <ClipboardList size={16} />
+                </button>
+              </article>
+            ))
+          ) : (
+            <div className="empty-state">No suppliers yet. Add approved suppliers before receiving stock.</div>
+          )}
         </div>
       </section>
 
@@ -1014,7 +1048,7 @@ function Suppliers({ db, canWrite, commit, flash }: { db: Database; canWrite: bo
         <div className="section-heading">
           <div>
             <h2>{form.id ? 'Edit Supplier' : 'Add Supplier'}</h2>
-            <p>Keep supplier traceability available for receiving reports.</p>
+            <p>Keep supplier records accurate for batch-level traceability.</p>
           </div>
         </div>
         <form className="form-grid" onSubmit={submit}>
@@ -1038,16 +1072,18 @@ function Suppliers({ db, canWrite, commit, flash }: { db: Database; canWrite: bo
 function ReceiveStock({ db, canWrite, commit, flash }: { db: Database; canWrite: boolean; commit: AppCommit; flash: (message: string) => void }) {
   const [scan, setScan] = useState('')
   const [form, setForm] = useState({
-    medicineId: db.medicines[0]?.id ?? '',
-    supplierId: db.suppliers[0]?.id ?? '',
+    medicineId: '',
+    supplierId: '',
     invoiceRef: '',
     batchNumber: '',
     expiryDate: '',
     quantity: 1,
     unitCost: 0,
     sellingPrice: 0,
-    location: 'Main Shelf',
+    location: 'Main Store',
   })
+  const selectedMedicineId = form.medicineId || db.medicines[0]?.id || ''
+  const selectedSupplierId = form.supplierId || db.suppliers[0]?.id || ''
 
   function applyScan() {
     const medicine = findMedicineByScan(db, scan)
@@ -1062,14 +1098,18 @@ function ReceiveStock({ db, canWrite, commit, flash }: { db: Database; canWrite:
   function submit(event: FormEvent) {
     event.preventDefault()
     if (!canWrite) return
+    if (!selectedMedicineId || !selectedSupplierId) {
+      flash('Add at least one medicine and supplier before receiving stock')
+      return
+    }
     if (!form.batchNumber || !form.expiryDate || form.quantity <= 0) {
       flash('Batch number, expiry, and quantity are required')
       return
     }
     const batch: Batch = {
       id: id('bat'),
-      medicineId: form.medicineId,
-      supplierId: form.supplierId,
+      medicineId: selectedMedicineId,
+      supplierId: selectedSupplierId,
       batchNumber: form.batchNumber,
       expiryDate: form.expiryDate,
       unitCost: Number(form.unitCost),
@@ -1080,7 +1120,7 @@ function ReceiveStock({ db, canWrite, commit, flash }: { db: Database; canWrite:
     }
     const ledger: LedgerEntry = {
       id: id('led'),
-      medicineId: form.medicineId,
+      medicineId: selectedMedicineId,
       batchId: batch.id,
       type: 'stock-in',
       quantity: Number(form.quantity),
@@ -1091,11 +1131,11 @@ function ReceiveStock({ db, canWrite, commit, flash }: { db: Database; canWrite:
     }
     const receipt: Receipt = {
       id: id('grn'),
-      supplierId: form.supplierId,
+      supplierId: selectedSupplierId,
       invoiceRef: form.invoiceRef || 'Manual receive',
       receivedAt: nowIso(),
       userId: '',
-      items: [{ medicineId: form.medicineId, batchId: batch.id, quantity: Number(form.quantity), unitCost: Number(form.unitCost) }],
+      items: [{ medicineId: selectedMedicineId, batchId: batch.id, quantity: Number(form.quantity), unitCost: Number(form.unitCost) }],
     }
     commit(
       'Received stock',
@@ -1123,30 +1163,9 @@ function ReceiveStock({ db, canWrite, commit, flash }: { db: Database; canWrite:
         </div>
       </div>
       <form className="form-grid" onSubmit={submit}>
-        <label className="scan-field full">
-          Scan barcode or SKU
-          <div>
-            <Barcode size={17} />
-            <input
-              value={scan}
-              onChange={(event) => setScan(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  applyScan()
-                }
-              }}
-              placeholder="Scan, then press Enter"
-              disabled={!canWrite}
-            />
-            <button className="ghost-button" type="button" onClick={applyScan} disabled={!canWrite}>
-              <Search size={16} />
-              Lookup
-            </button>
-          </div>
-        </label>
-        <label className="full">Medicine<select value={form.medicineId} onChange={(event) => setForm({ ...form, medicineId: event.target.value })} disabled={!canWrite}>{db.medicines.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.brandName} · {medicine.genericName}</option>)}</select></label>
-        <label>Supplier<select value={form.supplierId} onChange={(event) => setForm({ ...form, supplierId: event.target.value })} disabled={!canWrite}>{db.suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
+        <label className="scan-field full">Scan barcode or SKU<div><Barcode size={17} /><input value={scan} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyScan() } }} placeholder="Scan, then press Enter" disabled={!canWrite || !db.medicines.length} /><button className="ghost-button" type="button" onClick={applyScan} disabled={!canWrite || !db.medicines.length}><Search size={16} />Lookup</button></div></label>
+        <label className="full">Medicine<select required value={selectedMedicineId} onChange={(event) => setForm({ ...form, medicineId: event.target.value })} disabled={!canWrite || !db.medicines.length}><option value="">Select medicine</option>{db.medicines.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.brandName} / {medicine.genericName}</option>)}</select></label>
+        <label>Supplier<select required value={selectedSupplierId} onChange={(event) => setForm({ ...form, supplierId: event.target.value })} disabled={!canWrite || !db.suppliers.length}><option value="">Select supplier</option>{db.suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
         <label>Invoice/reference<input value={form.invoiceRef} onChange={(event) => setForm({ ...form, invoiceRef: event.target.value })} disabled={!canWrite} /></label>
         <label>Batch/Lot number<input required value={form.batchNumber} onChange={(event) => setForm({ ...form, batchNumber: event.target.value })} disabled={!canWrite} /></label>
         <label>Expiry date<input required type="date" value={form.expiryDate} onChange={(event) => setForm({ ...form, expiryDate: event.target.value })} disabled={!canWrite} /></label>
@@ -1155,7 +1174,7 @@ function ReceiveStock({ db, canWrite, commit, flash }: { db: Database; canWrite:
         <label>Selling price<input type="number" min="0" value={form.sellingPrice} onChange={(event) => setForm({ ...form, sellingPrice: Number(event.target.value) })} disabled={!canWrite} /></label>
         <label>Stock location<input value={form.location} onChange={(event) => setForm({ ...form, location: event.target.value })} disabled={!canWrite} /></label>
         <div className="form-actions full">
-          <button className="primary-button" type="submit" disabled={!canWrite}>
+          <button className="primary-button" type="submit" disabled={!canWrite || !db.medicines.length || !db.suppliers.length}>
             <PackagePlus size={17} />
             Post stock-in
           </button>
@@ -1182,14 +1201,15 @@ function IssueStock({
 }) {
   const [scan, setScan] = useState('')
   const [form, setForm] = useState({
-    medicineId: db.medicines[0]?.id ?? '',
+    medicineId: '',
     quantity: 1,
     reason: 'Dispense',
     reference: '',
   })
+  const selectedMedicineId = form.medicineId || db.medicines[0]?.id || ''
 
   const availableBatches = stockRows
-    .filter((row) => row.medicine.id === form.medicineId && row.quantity > 0 && row.daysToExpiry >= 0)
+    .filter((row) => row.medicine.id === selectedMedicineId && row.quantity > 0 && row.daysToExpiry >= 0)
     .sort((a, b) => a.batch.expiryDate.localeCompare(b.batch.expiryDate))
   const totalAvailable = availableBatches.reduce((sum, row) => sum + row.quantity, 0)
   const suggested = allocateFefo(availableBatches, Number(form.quantity))
@@ -1214,7 +1234,7 @@ function IssueStock({
     }
     const entries: LedgerEntry[] = suggested.map((item) => ({
       id: id('led'),
-      medicineId: form.medicineId,
+      medicineId: selectedMedicineId,
       batchId: item.row.batch.id,
       type: 'stock-out',
       quantity: -item.quantity,
@@ -1248,8 +1268,8 @@ function IssueStock({
           </div>
         </div>
         <form className="form-grid" onSubmit={submit}>
-          <label className="scan-field full">Scan barcode or SKU<div><Barcode size={17} /><input value={scan} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyScan() } }} placeholder="Scan, then press Enter" disabled={!canWrite} /><button className="ghost-button" type="button" onClick={applyScan} disabled={!canWrite}><Search size={16} />Lookup</button></div></label>
-          <label className="full">Medicine<select value={form.medicineId} onChange={(event) => setForm({ ...form, medicineId: event.target.value })} disabled={!canWrite}>{db.medicines.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.brandName} · {medicine.genericName}</option>)}</select></label>
+          <label className="scan-field full">Scan barcode or SKU<div><Barcode size={17} /><input value={scan} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyScan() } }} placeholder="Scan, then press Enter" disabled={!canWrite || !db.medicines.length} /><button className="ghost-button" type="button" onClick={applyScan} disabled={!canWrite || !db.medicines.length}><Search size={16} />Lookup</button></div></label>
+          <label className="full">Medicine<select required value={selectedMedicineId} onChange={(event) => setForm({ ...form, medicineId: event.target.value })} disabled={!canWrite || !db.medicines.length}><option value="">Select medicine</option>{db.medicines.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.brandName} / {medicine.genericName}</option>)}</select></label>
           <label>Quantity<input type="number" min="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} disabled={!canWrite} /></label>
           <label>Reason<select value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} disabled={!canWrite}><option>Dispense</option><option>Internal use</option><option>Donation</option><option>Damage</option><option>Other</option></select></label>
           <label className="full">Reference note<input value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} placeholder="Receipt, request, or memo reference" disabled={!canWrite} /></label>
@@ -1258,7 +1278,7 @@ function IssueStock({
             <span>available from non-expired batches</span>
           </div>
           <div className="form-actions full">
-            <button className="primary-button" type="submit" disabled={!canWrite || Number(form.quantity) > totalAvailable}>
+            <button className="primary-button" type="submit" disabled={!canWrite || !selectedMedicineId || Number(form.quantity) > totalAvailable || totalAvailable <= 0}>
               <PackageMinus size={17} />
               Post stock-out
             </button>
@@ -1294,13 +1314,14 @@ function allocateFefo(rows: StockRow[], quantity: number) {
 function Adjustments({ stockRows, canAdjust, commit, flash }: { stockRows: StockRow[]; canAdjust: boolean; commit: AppCommit; flash: (message: string) => void }) {
   const positiveRows = stockRows.filter((row) => row.quantity > 0)
   const [form, setForm] = useState({
-    batchId: positiveRows[0]?.batch.id ?? '',
+    batchId: '',
     mode: 'write-off' as LedgerType,
     quantity: 1,
-    reason: 'Expired/damaged stock',
+    reason: '',
     reference: '',
   })
-  const selected = stockRows.find((row) => row.batch.id === form.batchId)
+  const selectedBatchId = form.batchId || positiveRows[0]?.batch.id || ''
+  const selected = stockRows.find((row) => row.batch.id === selectedBatchId)
   const isPositive = form.mode === 'adjustment' || form.mode === 'customer-return'
   const signedQuantity = isPositive ? Number(form.quantity) : -Number(form.quantity)
 
@@ -1332,7 +1353,7 @@ function Adjustments({ stockRows, canAdjust, commit, flash }: { stockRows: Stock
       null,
       entry,
     )
-    setForm({ ...form, quantity: 1, reference: '' })
+    setForm({ ...form, quantity: 1, reference: '', reason: '' })
     flash('Adjustment posted')
   }
 
@@ -1345,14 +1366,14 @@ function Adjustments({ stockRows, canAdjust, commit, flash }: { stockRows: Stock
         </div>
       </div>
       <form className="form-grid" onSubmit={submit}>
-        <label className="full">Batch<select value={form.batchId} onChange={(event) => setForm({ ...form, batchId: event.target.value })} disabled={!canAdjust}>{positiveRows.map((row) => <option key={row.batch.id} value={row.batch.id}>{row.medicine.brandName} · {row.batch.batchNumber} · Qty {row.quantity}</option>)}</select></label>
+        <label className="full">Batch<select required value={selectedBatchId} onChange={(event) => setForm({ ...form, batchId: event.target.value })} disabled={!canAdjust || !positiveRows.length}><option value="">Select batch</option>{positiveRows.map((row) => <option key={row.batch.id} value={row.batch.id}>{row.medicine.brandName} / {row.batch.batchNumber} / Qty {row.quantity}</option>)}</select></label>
         <label>Transaction type<select value={form.mode} onChange={(event) => setForm({ ...form, mode: event.target.value as LedgerType })} disabled={!canAdjust}><option value="write-off">Write-off</option><option value="supplier-return">Supplier return</option><option value="customer-return">Customer return</option><option value="adjustment">Positive adjustment</option></select></label>
         <label>Quantity<input type="number" min="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} disabled={!canAdjust} /></label>
         <label className="full">Reason<textarea required value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} disabled={!canAdjust} /></label>
         <label className="full">Reference<input value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} disabled={!canAdjust} /></label>
-        {selected && <div className="availability full"><strong>{selected.medicine.brandName}</strong><span>{selected.batch.batchNumber} · available {number.format(selected.quantity)} · expires {selected.batch.expiryDate}</span></div>}
+        {selected && <div className="availability full"><strong>{selected.medicine.brandName}</strong><span>{selected.batch.batchNumber} / available {number.format(selected.quantity)} / expires {selected.batch.expiryDate}</span></div>}
         <div className="form-actions full">
-          <button className="primary-button" type="submit" disabled={!canAdjust}>
+          <button className="primary-button" type="submit" disabled={!canAdjust || !selected}>
             <RotateCcw size={17} />
             Post entry
           </button>
@@ -1463,19 +1484,103 @@ function Audit({ db }: { db: Database }) {
         </div>
       </div>
       <div className="audit-list">
-        {db.auditLogs.map((log) => {
-          const user = db.users.find((item) => item.id === log.userId)
-          return (
-            <article className="audit-item" key={log.id}>
-              <ShieldCheck size={18} />
-              <div>
-                <strong>{log.action}</strong>
-                <span>{user?.name ?? 'System'} · {log.entity} · {new Date(log.createdAt).toLocaleString()}</span>
-              </div>
-              <code>{log.entityId}</code>
-            </article>
-          )
-        })}
+        {db.auditLogs.length ? (
+          db.auditLogs.map((log) => {
+            const user = db.users.find((item) => item.id === log.userId)
+            return (
+              <article className="audit-item" key={log.id}>
+                <ShieldCheck size={18} />
+                <div>
+                  <strong>{log.action}</strong>
+                  <span>{user?.name ?? 'System'} / {log.entity} / {new Date(log.createdAt).toLocaleString()}</span>
+                </div>
+                <code>{log.entityId}</code>
+              </article>
+            )
+          })
+        ) : (
+          <div className="empty-state">No audit entries yet.</div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function UserManagement({ db, currentUser, commit, flash }: { db: Database; currentUser: User; commit: AppCommit; flash: (message: string) => void }) {
+  function updateUser(userId: string, updates: Partial<Pick<User, 'role' | 'status'>>) {
+    const target = db.users.find((user) => user.id === userId)
+    if (!target) return
+    if (target.id === currentUser.id && updates.status && updates.status !== 'active') {
+      flash('You cannot suspend your own active admin account')
+      return
+    }
+    const after = {
+      ...target,
+      ...updates,
+      approvedAt: updates.status === 'active' ? nowIso() : target.approvedAt,
+      approvedBy: updates.status === 'active' ? currentUser.id : target.approvedBy,
+    }
+    commit(
+      'Updated user access',
+      'user',
+      userId,
+      (draft) => {
+        draft.users = draft.users.map((user) => (user.id === userId ? after : user))
+      },
+      target,
+      after,
+    )
+    flash('User access updated')
+  }
+
+  return (
+    <section className="content-section">
+      <div className="section-heading">
+        <div>
+          <h2>User Access Control</h2>
+          <p>New registrations stay pending until an admin assigns a role and activates the account.</p>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Phone</th>
+              <th>Role</th>
+              <th>Status</th>
+              <th>Requested</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {db.users.map((user) => (
+              <tr key={user.id}>
+                <td><strong>{user.name}</strong><span>{user.email}</span></td>
+                <td>{user.phone || '-'}</td>
+                <td>
+                  <select value={user.role} onChange={(event) => updateUser(user.id, { role: event.target.value as Role })} disabled={user.id === currentUser.id}>
+                    {Object.entries(roleLabels).map(([role, label]) => <option key={role} value={role}>{label}</option>)}
+                  </select>
+                </td>
+                <td><span className={`pill ${user.status}`}>{statusLabels[user.status]}</span></td>
+                <td>{new Date(user.createdAt).toLocaleDateString()}</td>
+                <td>
+                  <div className="button-row">
+                    <button className="ghost-button" type="button" onClick={() => updateUser(user.id, { status: 'active' })} disabled={user.status === 'active'}>
+                      <UserCheck size={16} />
+                      Activate
+                    </button>
+                    <button className="ghost-button" type="button" onClick={() => updateUser(user.id, { status: 'suspended' })} disabled={user.id === currentUser.id || user.status === 'suspended'}>
+                      <XCircle size={16} />
+                      Suspend
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </section>
   )
@@ -1505,7 +1610,7 @@ function SettingsView({ db, canAdmin, commit, flash }: { db: Database; canAdmin:
       <div className="section-heading">
         <div>
           <h2>Inventory Settings</h2>
-          <p>Single-branch now, with branch naming and thresholds ready for expansion.</p>
+          <p>Single-branch now, with thresholds ready for expansion.</p>
         </div>
       </div>
       <form className="form-grid" onSubmit={submit}>
@@ -1555,7 +1660,7 @@ function StockTable({ rows, compact = false }: { rows: StockRow[]; compact?: boo
             ))
           ) : (
             <tr>
-              <td colSpan={compact ? 5 : 6}>No rows to display.</td>
+              <td colSpan={compact ? 5 : 6}>No stock rows yet.</td>
             </tr>
           )}
         </tbody>
