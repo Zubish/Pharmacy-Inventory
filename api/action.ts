@@ -13,8 +13,8 @@ import {
   sanitizeDatabase,
   saveDatabase,
   today,
-} from './_shared'
-import type { Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, Role, Supplier } from './_shared'
+} from './_shared.js'
+import type { Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, Role, Supplier } from './_shared.js'
 
 type ActionBody = {
   action: string

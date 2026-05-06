@@ -1,5 +1,5 @@
-import { addAudit, createSession, fail, hashPassword, id, loadDatabase, nowIso, requireMethod, sanitizeDatabase, saveDatabase } from './_shared'
-import type { HandlerRequest, HandlerResponse, User } from './_shared'
+import { addAudit, createSession, fail, hashPassword, id, loadDatabase, nowIso, requireMethod, sanitizeDatabase, saveDatabase } from './_shared.js'
+import type { HandlerRequest, HandlerResponse, User } from './_shared.js'
 
 export default async function handler(req: HandlerRequest, res: HandlerResponse) {
   if (!requireMethod(req, res, ['POST'])) return
