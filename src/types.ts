@@ -40,6 +40,17 @@ export type Supplier = {
   active: boolean
 }
 
+export type Branch = {
+  id: string
+  name: string
+  code: string
+  address: string
+  managerName: string
+  phone: string
+  active: boolean
+  createdAt: string
+}
+
 export type Batch = {
   id: string
   medicineId: string
@@ -98,8 +109,11 @@ export type ChatMessage = {
 }
 
 export type AppSettings = {
+  softwareName: string
+  accountName: string
   pharmacyName: string
   branchName: string
+  primaryAdminId?: string
   nearExpiryDays: number
   approvalThreshold: number
 }
@@ -108,6 +122,7 @@ export type Database = {
   users: User[]
   medicines: Medicine[]
   suppliers: Supplier[]
+  branches: Branch[]
   batches: Batch[]
   ledger: LedgerEntry[]
   receipts: Receipt[]

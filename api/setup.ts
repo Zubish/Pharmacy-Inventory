@@ -42,9 +42,22 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
       approvedBy: adminId,
     }
     db.users = [admin]
+    db.branches = [{
+      id: 'main',
+      name: body.branchName.trim(),
+      code: body.branchName.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 12) || 'MAIN',
+      address: '',
+      managerName: body.name.trim(),
+      phone: body.phone.trim(),
+      active: true,
+      createdAt,
+    }]
+    db.settings.softwareName = 'RxLedger'
+    db.settings.accountName = body.pharmacyName.trim()
     db.settings.pharmacyName = body.pharmacyName.trim()
     db.settings.branchName = body.branchName.trim()
-    addAudit(db, adminId, 'Completed first-run pharmacy setup', 'system', 'setup')
+    db.settings.primaryAdminId = adminId
+    addAudit(db, adminId, 'Completed first-run RxLedger account setup', 'system', 'setup')
     await saveDatabase(db)
     const session = await createSession(adminId)
     res.status(200).json({ ...session, db: sanitizeDatabase(db), currentUser: sanitizeDatabase(db).users[0] })

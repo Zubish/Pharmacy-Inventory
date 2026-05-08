@@ -8,6 +8,7 @@ import {
   Barcode,
   Bell,
   Boxes,
+  Building2,
   CheckCircle2,
   ClipboardList,
   Download,
@@ -64,6 +65,7 @@ type View =
   | 'notifications'
   | 'audit'
   | 'users'
+  | 'branches'
   | 'settings'
 
 type User = {
@@ -102,6 +104,17 @@ type Supplier = {
   address: string
   licenseRef: string
   active: boolean
+}
+
+type Branch = {
+  id: string
+  name: string
+  code: string
+  address: string
+  managerName: string
+  phone: string
+  active: boolean
+  createdAt: string
 }
 
 type Batch = {
@@ -170,8 +183,11 @@ type ChatMessage = {
 }
 
 type AppSettings = {
+  softwareName: string
+  accountName: string
   pharmacyName: string
   branchName: string
+  primaryAdminId?: string
   nearExpiryDays: number
   approvalThreshold: number
 }
@@ -180,6 +196,7 @@ type Database = {
   users: User[]
   medicines: Medicine[]
   suppliers: Supplier[]
+  branches: Branch[]
   batches: Batch[]
   ledger: LedgerEntry[]
   receipts: Receipt[]
@@ -192,6 +209,7 @@ type StockRow = {
   batch: Batch
   medicine: Medicine
   supplier: Supplier | undefined
+  branch: Branch | undefined
   quantity: number
   costValue: number
   daysToExpiry: number
@@ -222,6 +240,7 @@ const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard; admi
   { id: 'notifications', label: 'Notifications', icon: Bell },
   { id: 'audit', label: 'Audit', icon: ShieldCheck },
   { id: 'users', label: 'Users', icon: Users, adminOnly: true },
+  { id: 'branches', label: 'Branches', icon: Building2, adminOnly: true },
   { id: 'settings', label: 'Settings', icon: Settings, adminOnly: true },
 ]
 
@@ -267,13 +286,25 @@ function createEmptyDatabase(): Database {
     users: [],
     medicines: [],
     suppliers: [],
+    branches: [{
+      id: 'main',
+      name: 'Main Branch',
+      code: 'MAIN',
+      address: '',
+      managerName: '',
+      phone: '',
+      active: true,
+      createdAt: new Date().toISOString(),
+    }],
     batches: [],
     ledger: [],
     receipts: [],
     chatMessages: [],
     auditLogs: [],
     settings: {
-      pharmacyName: 'Pharmacy Inventory',
+      softwareName: 'RxLedger',
+      accountName: 'Pharmacy Account',
+      pharmacyName: 'RxLedger',
       branchName: 'Main Branch',
       nearExpiryDays: 90,
       approvalThreshold: 25_000,
@@ -294,6 +325,7 @@ function getStockRows(db: Database): StockRow[] {
         batch,
         medicine,
         supplier: db.suppliers.find((supplier) => supplier.id === batch.supplierId),
+        branch: db.branches.find((branch) => branch.id === batch.branchId),
         quantity,
         costValue: quantity * batch.unitCost,
         daysToExpiry: days,
@@ -310,6 +342,18 @@ function aggregateMedicineStock(rows: StockRow[]) {
     totals.set(row.medicine.id, (totals.get(row.medicine.id) ?? 0) + row.quantity)
   })
   return totals
+}
+
+function getActiveBranches(db: Database) {
+  return db.branches.filter((branch) => branch.active)
+}
+
+function getBranchName(db: Database, branchId: string) {
+  return db.branches.find((branch) => branch.id === branchId)?.name ?? db.settings.branchName
+}
+
+function getPrimaryAdminId(db: Database) {
+  return db.settings.primaryAdminId || db.users.find((user) => user.role === 'admin' && user.status === 'active')?.id || ''
 }
 
 function findMedicineByScan(db: Database, scan: string) {
@@ -444,6 +488,9 @@ function App() {
       try {
         setConnectionError('')
         const boot = await bootstrap()
+        if (!boot.settings) {
+          throw new Error('Backend API is not available. Run npx vercel dev with DATABASE_URL for API-backed flows.')
+        }
         setHasUsers(boot.hasUsers)
         setDb((previous) => ({ ...previous, settings: boot.settings }))
         if (getStoredToken()) {
@@ -574,8 +621,8 @@ function App() {
             <Pill size={22} />
           </div>
           <div>
-            <strong>{db.settings.pharmacyName}</strong>
-            <span>{db.settings.branchName}</span>
+            <strong>{db.settings.softwareName}</strong>
+            <span>{db.settings.accountName}</span>
           </div>
         </div>
 
@@ -619,7 +666,7 @@ function App() {
               {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
             </button>
             <div>
-              <span className="eyebrow">Operational inventory control</span>
+              <span className="eyebrow">{db.settings.accountName}</span>
               <h1>{views.find((view) => view.id === activeView)?.label}</h1>
             </div>
           </div>
@@ -651,6 +698,7 @@ function App() {
         {activeView === 'notifications' && <NotificationsView notifications={notifications} setActiveView={setActiveView} />}
         {activeView === 'audit' && <Audit db={db} />}
         {activeView === 'users' && <UserManagement db={db} currentUser={currentUser} executeAction={executeAction} flash={flash} />}
+        {activeView === 'branches' && <BranchesView db={db} canAdmin={canAdmin} executeAction={executeAction} />}
         {activeView === 'settings' && <SettingsView db={db} canAdmin={canAdmin} executeAction={executeAction} />}
       </main>
     </div>
@@ -717,9 +765,9 @@ function AuthScreen({
           <Pill size={30} />
         </div>
         <div>
-          <span className="eyebrow">{activeMode === 'setup' ? 'First run setup' : pharmacyName}</span>
-          <h1>{activeMode === 'setup' ? 'Set up your pharmacy workspace' : 'Sign in to manage pharmacy inventory'}</h1>
-          <p>{activeMode === 'setup' ? 'Create the first administrator account before adding medicines, suppliers, and stock.' : 'Use your approved staff account. New staff can request access for admin review.'}</p>
+          <span className="eyebrow">{activeMode === 'setup' ? 'RxLedger setup' : pharmacyName}</span>
+          <h1>{activeMode === 'setup' ? 'Create your pharmacy account' : 'Sign in to RxLedger'}</h1>
+          <p>{activeMode === 'setup' ? 'Create the company account, first branch, and permanent administrator before adding medicines, suppliers, and stock.' : 'Use your approved staff account. New staff can request access for admin review.'}</p>
         </div>
 
         {activeMode !== 'setup' && (
@@ -763,16 +811,16 @@ function SetupForm({ createFirstAdmin, setError }: { createFirstAdmin: (input: S
 
   return (
     <form className="form-grid" onSubmit={submit}>
-      <label className="full">Pharmacy name<input required value={form.pharmacyName} onChange={(event) => setForm({ ...form, pharmacyName: event.target.value })} autoFocus /></label>
-      <label className="full">Branch name<input required value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} /></label>
-      <label className="full">Admin full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
+      <label className="full">Account/company name<input required value={form.pharmacyName} onChange={(event) => setForm({ ...form, pharmacyName: event.target.value })} placeholder="Totalenergies EP" autoFocus /></label>
+      <label className="full">First branch/site<input required value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} placeholder="Deepwater Medical LOS" /></label>
+      <label className="full">Permanent admin full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /></label>
       <label>Email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label>
       <label>Phone<input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} /></label>
       <label className="full">Password<input required type="password" minLength={8} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label>
       <div className="form-actions full">
         <button className="primary-button" type="submit">
           <ShieldCheck size={17} />
-          Create admin workspace
+          Create RxLedger account
         </button>
       </div>
     </form>
@@ -875,16 +923,48 @@ function Dashboard({
   const costValue = stockRows.reduce((sum, row) => sum + Math.max(0, row.costValue), 0)
   const todayMovements = db.ledger.filter((entry) => entry.createdAt.slice(0, 10) === today()).length
   const pendingUsers = db.users.filter((user) => user.status === 'pending').length
+  const activeBranches = getActiveBranches(db)
+  const branchSummaries = activeBranches.map((branch) => {
+    const rows = stockRows.filter((row) => row.batch.branchId === branch.id && row.quantity > 0)
+    const branchStockValue = rows.reduce((sum, row) => sum + Math.max(0, row.costValue), 0)
+    const branchExpired = rows.filter((row) => row.status === 'expired').length
+    const branchNearExpiry = rows.filter((row) => row.status === 'near-expiry').length
+    const branchSkuCount = new Set(rows.map((row) => row.medicine.id)).size
+    return { branch, branchStockValue, branchExpired, branchNearExpiry, branchSkuCount }
+  })
 
   return (
     <div className="page-grid">
       <section className="metric-grid">
         <Metric icon={Boxes} label="Active SKUs" value={db.medicines.filter((medicine) => medicine.active).length} />
+        <Metric icon={Building2} label="Active branches" value={activeBranches.length} />
         <Metric icon={Archive} label="Stock value at cost" value={money.format(costValue)} />
         <Metric icon={AlertTriangle} label="Low stock items" value={lowStock.length} tone={lowStock.length ? 'warning' : 'good'} />
         <Metric icon={XCircle} label="Expired batches" value={expired.length} tone={expired.length ? 'danger' : 'good'} />
         <Metric icon={Activity} label="Movements today" value={todayMovements} />
-        <Metric icon={UserCheck} label="Pending users" value={pendingUsers} tone={pendingUsers ? 'warning' : 'good'} />
+      </section>
+
+      <section className="content-section">
+        <div className="section-heading">
+          <div>
+            <h2>Main Account Overview</h2>
+            <p>Company-level view across branches/sites. Stock remains held by branches.</p>
+          </div>
+          <span className="pill active">{db.settings.accountName}</span>
+        </div>
+        <div className="branch-grid">
+          {branchSummaries.map(({ branch, branchStockValue, branchExpired, branchNearExpiry, branchSkuCount }) => (
+            <article className="branch-card" key={branch.id}>
+              <Building2 size={19} />
+              <div>
+                <strong>{branch.name}</strong>
+                <span>{branch.code}</span>
+                <span>{branchSkuCount} stocked SKU{branchSkuCount === 1 ? '' : 's'} / {money.format(branchStockValue)}</span>
+                <span>{branchNearExpiry} near expiry / {branchExpired} expired</span>
+              </div>
+            </article>
+          ))}
+        </div>
       </section>
 
       <section className="content-section">
@@ -1356,9 +1436,12 @@ function ReceiveStock({ db, canWrite, executeAction, flash }: { db: Database; ca
   const [header, setHeader] = useState({
     supplierId: '',
     invoiceRef: '',
+    branchId: '',
   })
   const [lines, setLines] = useState<ReceiveLine[]>([createLine()])
   const selectedSupplierId = header.supplierId || db.suppliers[0]?.id || ''
+  const activeBranches = getActiveBranches(db)
+  const selectedBranchId = header.branchId || activeBranches[0]?.id || 'main'
 
   function updateLine(rowId: string, updates: Partial<ReceiveLine>) {
     setLines((current) => current.map((line) => (line.rowId === rowId ? { ...line, ...updates } : line)))
@@ -1385,8 +1468,8 @@ function ReceiveStock({ db, canWrite, executeAction, flash }: { db: Database; ca
   function submit(event: FormEvent) {
     event.preventDefault()
     if (!canWrite) return
-    if (!selectedSupplierId || !db.medicines.length) {
-      flash('Add at least one medicine and supplier before receiving stock')
+    if (!selectedSupplierId || !db.medicines.length || !selectedBranchId) {
+      flash('Add at least one medicine, supplier, and branch before receiving stock')
       return
     }
     const items = lines.map((line) => ({ ...line, medicineId: line.medicineId || db.medicines[0]?.id || '' }))
@@ -1394,9 +1477,18 @@ function ReceiveStock({ db, canWrite, executeAction, flash }: { db: Database; ca
       flash('Medicine, batch number, expiry, and quantity are required for every line')
       return
     }
+    if (items.some((line) => line.expiryDate < today())) {
+      flash('Receiving blocked: expiry date must be today or later')
+      return
+    }
+    if (items.some((line) => Number(line.sellingPrice) > 0 && Number(line.sellingPrice) < Number(line.unitCost))) {
+      flash('Receiving blocked: selling price cannot be lower than unit cost')
+      return
+    }
     void executeAction('receiveStock', {
       supplierId: selectedSupplierId,
       invoiceRef: header.invoiceRef,
+      branchId: selectedBranchId,
       items,
     }, `${items.length} stock line${items.length > 1 ? 's' : ''} received and posted`)
     setHeader({ ...header, invoiceRef: '' })
@@ -1417,6 +1509,7 @@ function ReceiveStock({ db, canWrite, executeAction, flash }: { db: Database; ca
         </button>
       </div>
       <form className="form-grid" onSubmit={submit}>
+        <label>Receiving branch<select required value={selectedBranchId} onChange={(event) => setHeader({ ...header, branchId: event.target.value })} disabled={!canWrite || !activeBranches.length}><option value="">Select branch</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
         <label>Supplier<select required value={selectedSupplierId} onChange={(event) => setHeader({ ...header, supplierId: event.target.value })} disabled={!canWrite || !db.suppliers.length}><option value="">Select supplier</option>{db.suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
         <label>Invoice/reference<input value={header.invoiceRef} onChange={(event) => setHeader({ ...header, invoiceRef: event.target.value })} disabled={!canWrite} /></label>
         <label className="scan-field full">Scan barcode or SKU<div><Barcode size={17} /><input value={scan} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyScan() } }} placeholder="Scan, then press Enter to set the last item line" disabled={!canWrite || !db.medicines.length} /><button className="ghost-button" type="button" onClick={applyScan} disabled={!canWrite || !db.medicines.length}><Search size={16} />Lookup</button></div></label>
@@ -1450,7 +1543,7 @@ function ReceiveStock({ db, canWrite, executeAction, flash }: { db: Database; ca
             <Plus size={16} />
             Add another item
           </button>
-          <button className="primary-button" type="submit" disabled={!canWrite || !db.medicines.length || !db.suppliers.length}>
+          <button className="primary-button" type="submit" disabled={!canWrite || !db.medicines.length || !db.suppliers.length || !activeBranches.length}>
             <PackagePlus size={17} />
             Post {lines.length} item{lines.length > 1 ? 's' : ''}
           </button>
@@ -1475,15 +1568,18 @@ function IssueStock({
 }) {
   const [scan, setScan] = useState('')
   const [form, setForm] = useState({
+    branchId: '',
     medicineId: '',
     quantity: 1,
     reason: 'Dispense',
     reference: '',
   })
+  const activeBranches = getActiveBranches(db)
+  const selectedBranchId = form.branchId || activeBranches[0]?.id || 'main'
   const selectedMedicineId = form.medicineId || db.medicines[0]?.id || ''
 
   const availableBatches = stockRows
-    .filter((row) => row.medicine.id === selectedMedicineId && row.quantity > 0 && row.daysToExpiry >= 0)
+    .filter((row) => row.batch.branchId === selectedBranchId && row.medicine.id === selectedMedicineId && row.quantity > 0 && row.daysToExpiry >= 0)
     .sort((a, b) => a.batch.expiryDate.localeCompare(b.batch.expiryDate))
   const totalAvailable = availableBatches.reduce((sum, row) => sum + row.quantity, 0)
   const suggested = allocateFefo(availableBatches, Number(form.quantity))
@@ -1508,6 +1604,7 @@ function IssueStock({
     }
     void executeAction('issueStock', {
       medicineId: selectedMedicineId,
+      branchId: selectedBranchId,
       quantity,
       reason: form.reason,
       reference: form.reference,
@@ -1527,13 +1624,14 @@ function IssueStock({
         </div>
         <form className="form-grid" onSubmit={submit}>
           <label className="scan-field full">Scan barcode or SKU<div><Barcode size={17} /><input value={scan} onChange={(event) => setScan(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); applyScan() } }} placeholder="Scan, then press Enter" disabled={!canWrite || !db.medicines.length} /><button className="ghost-button" type="button" onClick={applyScan} disabled={!canWrite || !db.medicines.length}><Search size={16} />Lookup</button></div></label>
+          <label className="full">Branch/site<select required value={selectedBranchId} onChange={(event) => setForm({ ...form, branchId: event.target.value })} disabled={!canWrite || !activeBranches.length}><option value="">Select branch</option>{activeBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}</select></label>
           <label className="full">Medicine<select required value={selectedMedicineId} onChange={(event) => setForm({ ...form, medicineId: event.target.value })} disabled={!canWrite || !db.medicines.length}><option value="">Select medicine</option>{db.medicines.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicine.brandName} / {medicine.genericName}</option>)}</select></label>
           <label>Quantity<input type="number" min="1" value={form.quantity} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} disabled={!canWrite} /></label>
           <label>Reason<select value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} disabled={!canWrite}><option>Dispense</option><option>Internal use</option><option>Donation</option><option>Damage</option><option>Other</option></select></label>
           <label className="full">Reference note<input value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} placeholder="Receipt, request, or memo reference" disabled={!canWrite} /></label>
           <div className="availability full">
             <strong>{number.format(totalAvailable)}</strong>
-            <span>available from non-expired batches</span>
+            <span>available from non-expired batches in {getBranchName(db, selectedBranchId)}</span>
           </div>
           <div className="form-actions full">
             <button className="primary-button" type="submit" disabled={!canWrite || !selectedMedicineId || Number(form.quantity) > totalAvailable || totalAvailable <= 0}>
@@ -1639,6 +1737,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
           Type: movementLabels[entry.type],
           Medicine: medicine?.brandName ?? 'Unknown',
           Batch: batch?.batchNumber ?? '-',
+          Branch: getBranchName(db, batch?.branchId ?? 'main'),
           Quantity: entry.quantity,
           Reason: entry.reason,
           Reference: entry.reference,
@@ -1658,6 +1757,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
           Days: row.daysToExpiry,
           Quantity: row.quantity,
           Status: row.status,
+          Branch: row.branch?.name ?? row.batch.branchId,
           Location: row.batch.location,
         }))
     }
@@ -1683,6 +1783,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
       'Unit Cost': row.batch.unitCost,
       'Cost Value': row.costValue,
       Supplier: row.supplier?.name ?? '-',
+      Branch: row.branch?.name ?? row.batch.branchId,
       Location: row.batch.location,
     }))
   }, [db, report, stockRows, stockTotals])
@@ -1840,11 +1941,17 @@ function Audit({ db }: { db: Database }) {
 }
 
 function UserManagement({ db, currentUser, executeAction, flash }: { db: Database; currentUser: User; executeAction: ExecuteAction; flash: (message: string) => void }) {
+  const primaryAdminId = getPrimaryAdminId(db)
+
   function updateUser(userId: string, updates: Partial<Pick<User, 'role' | 'status'>>) {
     const target = db.users.find((user) => user.id === userId)
     if (!target) return
     if (target.id === currentUser.id && updates.status && updates.status !== 'active') {
       flash('You cannot suspend your own active admin account')
+      return
+    }
+    if (target.id === primaryAdminId && ((updates.status && updates.status !== 'active') || (updates.role && updates.role !== 'admin'))) {
+      flash('The permanent account admin cannot be downgraded or suspended')
       return
     }
     void executeAction('updateUser', { userId, updates }, 'User access updated')
@@ -1873,10 +1980,10 @@ function UserManagement({ db, currentUser, executeAction, flash }: { db: Databas
           <tbody>
             {db.users.map((user) => (
               <tr key={user.id}>
-                <td><strong>{user.name}</strong><span>{user.email}</span></td>
+                <td><strong>{user.name}</strong><span>{user.email}{user.id === primaryAdminId ? ' / Permanent admin' : ''}</span></td>
                 <td>{user.phone || '-'}</td>
                 <td>
-                  <select value={user.role} onChange={(event) => updateUser(user.id, { role: event.target.value as Role })} disabled={user.id === currentUser.id}>
+                  <select value={user.role} onChange={(event) => updateUser(user.id, { role: event.target.value as Role })} disabled={user.id === currentUser.id || user.id === primaryAdminId}>
                     {Object.entries(roleLabels).map(([role, label]) => <option key={role} value={role}>{label}</option>)}
                   </select>
                 </td>
@@ -1888,7 +1995,7 @@ function UserManagement({ db, currentUser, executeAction, flash }: { db: Databas
                       <UserCheck size={16} />
                       Activate
                     </button>
-                    <button className="ghost-button" type="button" onClick={() => updateUser(user.id, { status: 'suspended' })} disabled={user.id === currentUser.id || user.status === 'suspended'}>
+                    <button className="ghost-button" type="button" onClick={() => updateUser(user.id, { status: 'suspended' })} disabled={user.id === currentUser.id || user.id === primaryAdminId || user.status === 'suspended'}>
                       <XCircle size={16} />
                       Suspend
                     </button>
@@ -1900,6 +2007,89 @@ function UserManagement({ db, currentUser, executeAction, flash }: { db: Databas
         </table>
       </div>
     </section>
+  )
+}
+
+function BranchesView({ db, canAdmin, executeAction }: { db: Database; canAdmin: boolean; executeAction: ExecuteAction }) {
+  const createBlank = (): Branch => ({
+    id: '',
+    name: '',
+    code: '',
+    address: '',
+    managerName: '',
+    phone: '',
+    active: true,
+    createdAt: new Date().toISOString(),
+  })
+  const [form, setForm] = useState<Branch>(createBlank)
+
+  function edit(branch: Branch) {
+    setForm(branch)
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    const record: Branch = {
+      ...form,
+      id: form.id || id('br'),
+      code: form.code || form.name.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 12),
+      createdAt: form.createdAt || new Date().toISOString(),
+    }
+    void executeAction('upsertBranch', { record }, 'Branch saved')
+    setForm(createBlank())
+  }
+
+  return (
+    <div className="two-column">
+      <section className="content-section">
+        <div className="section-heading">
+          <div>
+            <h2>Branches and Sites</h2>
+            <p>The account is the company dashboard; branches hold stock and operational movement.</p>
+          </div>
+        </div>
+        <div className="branch-grid">
+          {db.branches.map((branch) => (
+            <article className="branch-card" key={branch.id}>
+              <Building2 size={19} />
+              <div>
+                <strong>{branch.name}</strong>
+                <span>{branch.code || 'No code'} / {branch.active ? 'Active' : 'Inactive'}</span>
+                <span>{branch.managerName || 'No manager'} / {branch.phone || 'No phone'}</span>
+                <span>{branch.address || 'No address recorded'}</span>
+              </div>
+              <button className="icon-button" type="button" onClick={() => edit(branch)} disabled={!canAdmin} title="Edit branch">
+                <ClipboardList size={16} />
+              </button>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="content-section">
+        <div className="section-heading">
+          <div>
+            <h2>{form.id ? 'Edit Branch' : 'Add Branch'}</h2>
+            <p>Add pharmacy outlets, medical sites, or dispensary branches under this account.</p>
+          </div>
+        </div>
+        <form className="form-grid" onSubmit={submit}>
+          <label className="full">Branch/site name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} disabled={!canAdmin} /></label>
+          <label>Code<input value={form.code} onChange={(event) => setForm({ ...form, code: event.target.value })} placeholder="LOS-01" disabled={!canAdmin} /></label>
+          <label>Phone<input value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} disabled={!canAdmin} /></label>
+          <label className="full">Manager/contact person<input value={form.managerName} onChange={(event) => setForm({ ...form, managerName: event.target.value })} disabled={!canAdmin} /></label>
+          <label className="full">Address<textarea value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} disabled={!canAdmin} /></label>
+          <label className="checkbox-row full"><input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} disabled={!canAdmin || form.id === 'main'} /> Active branch</label>
+          <div className="form-actions full">
+            <button className="ghost-button" type="button" onClick={() => setForm(createBlank())}>Clear</button>
+            <button className="primary-button" type="submit" disabled={!canAdmin}>
+              <Building2 size={17} />
+              Save branch
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   )
 }
 
@@ -1915,13 +2105,14 @@ function SettingsView({ db, canAdmin, executeAction }: { db: Database; canAdmin:
     <section className="content-section narrow">
       <div className="section-heading">
         <div>
-          <h2>Inventory Settings</h2>
-          <p>Single-branch now, with thresholds ready for expansion.</p>
+          <h2>Account Settings</h2>
+          <p>RxLedger account identity and operational thresholds.</p>
         </div>
       </div>
       <form className="form-grid" onSubmit={submit}>
-        <label>Pharmacy name<input value={form.pharmacyName} onChange={(event) => setForm({ ...form, pharmacyName: event.target.value })} disabled={!canAdmin} /></label>
-        <label>Branch name<input value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} disabled={!canAdmin} /></label>
+        <label>Software name<input value={form.softwareName} onChange={(event) => setForm({ ...form, softwareName: event.target.value })} disabled={!canAdmin} /></label>
+        <label>Account/company name<input value={form.accountName} onChange={(event) => setForm({ ...form, accountName: event.target.value, pharmacyName: event.target.value })} disabled={!canAdmin} /></label>
+        <label>Default branch name<input value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} disabled={!canAdmin} /></label>
         <label>Near-expiry days<input type="number" min="1" value={form.nearExpiryDays} onChange={(event) => setForm({ ...form, nearExpiryDays: Number(event.target.value) })} disabled={!canAdmin} /></label>
         <label>Approval threshold (NGN)<input type="number" min="0" value={form.approvalThreshold} onChange={(event) => setForm({ ...form, approvalThreshold: Number(event.target.value) })} disabled={!canAdmin} /></label>
         <div className="form-actions full">
@@ -1945,6 +2136,7 @@ function StockTable({ rows, compact = false }: { rows: StockRow[]; compact?: boo
             <th>Batch</th>
             <th>Expiry</th>
             <th>Qty</th>
+            {!compact && <th>Branch</th>}
             <th>Location</th>
             {!compact && <th>Status</th>}
           </tr>
@@ -1960,13 +2152,14 @@ function StockTable({ rows, compact = false }: { rows: StockRow[]; compact?: boo
                 <td>{row.batch.batchNumber}</td>
                 <td>{row.batch.expiryDate}</td>
                 <td>{number.format(row.quantity)}</td>
+                {!compact && <td>{row.branch?.name ?? row.batch.branchId}</td>}
                 <td>{row.batch.location}</td>
                 {!compact && <td><span className={`pill ${row.status}`}>{row.status.replace('-', ' ')}</span></td>}
               </tr>
             ))
           ) : (
             <tr>
-              <td colSpan={compact ? 5 : 6}>No stock rows yet.</td>
+              <td colSpan={compact ? 5 : 7}>No stock rows yet.</td>
             </tr>
           )}
         </tbody>

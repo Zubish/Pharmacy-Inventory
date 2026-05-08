@@ -1,20 +1,25 @@
-# Pharmacy Inventory Web App
+# RxLedger
 
-Operational inventory app for a single-branch pharmacy in Nigeria. It tracks medicines by batch, expiry date, barcode, supplier, and immutable stock ledger movements.
+Operational pharmacy inventory app for Nigerian pharmacies and medical sites. RxLedger tracks medicines by account, branch/site, batch, expiry date, barcode, supplier, NAFDAC number, and immutable stock ledger movements.
 
 ## What Is Included
 
 - Vercel serverless API backed by Postgres
 - Shared inventory data across devices/users
 - Server-side password hashing and session tokens
-- First-run workspace setup for the pharmacy and first administrator
+- First-run account setup for the company/pharmacy account and first branch/site
+- Permanent first administrator for each account, protected from downgrade or suspension
+- Branch/site register for outlets, dispensaries, and medical locations
+- Main account dashboard with cross-branch stock overview
 - Staff access requests with no default demo accounts
 - Admin-controlled role assignment and account activation/suspension
 - Role-aware access for Admin, Pharmacist, Inventory Officer, and Viewer/Auditor
 - Medicine catalog with SKU, barcode, manufacturer, NAFDAC number, reorder level, and active status
 - Supplier register with contact, address, and license reference
 - Goods receiving workflow with mandatory batch, expiry, quantity, unit cost, supplier, and invoice reference
+- Branch-aware goods receiving and stock issue workflows
 - Stock issue workflow with FEFO allocation and expired-batch blocking
+- Backend receiving validation that blocks expired batches and selling prices below unit cost
 - Adjustments, supplier returns, customer returns, and write-offs with mandatory reasons
 - Dashboard for stock value, low stock, near expiry, expired batches, access approvals, and daily movements
 - Reports for stock on hand, stock movement ledger, expiry, and reorder needs
@@ -24,10 +29,15 @@ Operational inventory app for a single-branch pharmacy in Nigeria. It tracks med
 ## First Use
 
 1. Open the deployed app.
-2. Complete the first-run setup form.
-3. The first user becomes the active Admin.
+2. Complete the first-run setup form with the account/company name, first branch/site, and permanent admin.
+3. The first user becomes the active Admin and cannot be downgraded or suspended.
 4. Other staff should use **Request access**.
 5. Admin reviews requests in **Users**, assigns a role, then activates the account.
+6. Admin can add more branches/sites in **Branches**.
+
+## Account Model
+
+RxLedger currently treats the main account as the company dashboard. Stock belongs to branches/sites, not to the main account itself. This keeps the current MVP simple while preparing the product for future billing plans and full multi-tenant SaaS isolation.
 
 ## Run Locally
 

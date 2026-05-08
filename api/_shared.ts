@@ -45,6 +45,17 @@ type Supplier = {
   active: boolean
 }
 
+type Branch = {
+  id: string
+  name: string
+  code: string
+  address: string
+  managerName: string
+  phone: string
+  active: boolean
+  createdAt: string
+}
+
 type Batch = {
   id: string
   medicineId: string
@@ -81,6 +92,7 @@ type Database = {
   users: User[]
   medicines: Medicine[]
   suppliers: Supplier[]
+  branches: Branch[]
   batches: Batch[]
   ledger: LedgerEntry[]
   receipts: Array<{
@@ -103,8 +115,11 @@ type Database = {
     createdAt: string
   }>
   settings: {
+    softwareName: string
+    accountName: string
     pharmacyName: string
     branchName: string
+    primaryAdminId?: string
     nearExpiryDays: number
     approvalThreshold: number
   }
@@ -131,13 +146,25 @@ export function createEmptyDatabase(): Database {
     users: [],
     medicines: [],
     suppliers: [],
+    branches: [{
+      id: 'main',
+      name: 'Main Branch',
+      code: 'MAIN',
+      address: '',
+      managerName: '',
+      phone: '',
+      active: true,
+      createdAt: nowIso(),
+    }],
     batches: [],
     ledger: [],
     receipts: [],
     chatMessages: [],
     auditLogs: [],
     settings: {
-      pharmacyName: 'Pharmacy Inventory',
+      softwareName: 'RxLedger',
+      accountName: 'Pharmacy Account',
+      pharmacyName: 'RxLedger',
       branchName: 'Main Branch',
       nearExpiryDays: 90,
       approvalThreshold: 25000,
@@ -145,7 +172,7 @@ export function createEmptyDatabase(): Database {
   }
 }
 
-export type { ChatMessage, Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, Role, Supplier, User }
+export type { Branch, ChatMessage, Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, Role, Supplier, User }
 
 export function id(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${randomBytes(4).toString('hex')}`
@@ -229,12 +256,29 @@ export async function saveDatabase(db: Database) {
 
 export function normalizeDatabase(raw: Partial<Database>): Database {
   const empty = createEmptyDatabase()
+  const rawSettings = raw.settings ?? {}
+  const accountName = rawSettings.accountName || rawSettings.pharmacyName || empty.settings.accountName
+  const branchName = rawSettings.branchName || empty.settings.branchName
+  const primaryAdminId = rawSettings.primaryAdminId || raw.users?.find((user) => user.role === 'admin' && user.status === 'active')?.id
+  const branches = (raw.branches?.length ? raw.branches : [{
+    ...empty.branches[0],
+    name: branchName,
+    code: branchName.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 12) || 'MAIN',
+  }]).map((branch) => ({
+    ...empty.branches[0],
+    ...branch,
+    id: branch.id || id('br'),
+    name: branch.name || branchName,
+    code: branch.code || branch.name?.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 12) || 'MAIN',
+    active: branch.active !== false,
+  }))
   return {
     ...empty,
     ...raw,
     users: raw.users ?? empty.users,
     medicines: raw.medicines ?? empty.medicines,
     suppliers: raw.suppliers ?? empty.suppliers,
+    branches,
     batches: raw.batches ?? empty.batches,
     ledger: raw.ledger ?? empty.ledger,
     receipts: raw.receipts ?? empty.receipts,
@@ -242,7 +286,12 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
     auditLogs: raw.auditLogs ?? empty.auditLogs,
     settings: {
       ...empty.settings,
-      ...(raw.settings ?? {}),
+      ...rawSettings,
+      softwareName: rawSettings.softwareName || 'RxLedger',
+      accountName,
+      pharmacyName: rawSettings.pharmacyName || accountName,
+      branchName,
+      primaryAdminId,
     },
   }
 }

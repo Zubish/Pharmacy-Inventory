@@ -28,6 +28,10 @@ async function request<T>(path: string, options: RequestInit = {}) {
   if (token) headers.set('Authorization', `Bearer ${token}`)
 
   const response = await fetch(path, { ...options, headers })
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.includes('application/json')) {
+    throw new Error('Backend API is not available. Run npx vercel dev with DATABASE_URL for API-backed flows.')
+  }
   const body = (await response.json().catch(() => ({}))) as { error?: string } & T
   if (!response.ok) throw new Error(body.error || 'Request failed')
   return body as ApiResult<T>

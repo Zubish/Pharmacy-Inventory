@@ -15,6 +15,7 @@ import {
   today,
 } from './_shared.js'
 import type { Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, Role, Supplier } from './_shared.js'
+import type { Branch } from './_shared.js'
 
 type ActionBody = {
   action: string
@@ -44,6 +45,9 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
         break
       case 'upsertSupplier':
         upsertSupplier(db, actor.id, actor.role, body.payload)
+        break
+      case 'upsertBranch':
+        upsertBranch(db, actor.id, actor.role, body.payload)
         break
       case 'receiveStock':
         receiveStock(db, actor.id, actor.role, body.payload)
@@ -98,6 +102,10 @@ function updateUser(db: Database, actorId: string, payload: Record<string, unkno
   const target = db.users.find((user) => user.id === userId)
   if (!target) throw new Error('User not found')
   const updates = (payload?.updates ?? {}) as Partial<{ role: Role; status: 'pending' | 'active' | 'suspended' }>
+  const primaryAdminId = db.settings.primaryAdminId || db.users.find((user) => user.role === 'admin' && user.status === 'active')?.id
+  if (target.id === primaryAdminId && ((updates.status && updates.status !== 'active') || (updates.role && updates.role !== 'admin'))) {
+    throw new Error('The permanent account admin cannot be downgraded or suspended')
+  }
   if (target.id === actorId && updates.status && updates.status !== 'active') throw new Error('You cannot suspend your own active admin account')
   const before = { ...target }
   if (updates.role) target.role = updates.role
@@ -182,11 +190,36 @@ function upsertSupplier(db: Database, actorId: string, actorRole: Role, payload:
   addAudit(db, actorId, before ? 'Updated supplier' : 'Created supplier', 'supplier', record.id, before, record)
 }
 
+function upsertBranch(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
+  const actor = db.users.find((user) => user.id === actorId)
+  if (!actor || !canAdmin({ ...actor, role: actorRole })) throw new Error('Only admins can save branches')
+  const input = (payload?.record ?? {}) as Partial<Branch>
+  const name = requireString(input.name, 'Branch name')
+  const record: Branch = {
+    id: input.id || id('br'),
+    name,
+    code: optionalString(input.code) || name.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 12) || 'BRANCH',
+    address: optionalString(input.address),
+    managerName: optionalString(input.managerName),
+    phone: optionalString(input.phone),
+    active: input.id === 'main' ? true : input.active !== false,
+    createdAt: input.createdAt || nowIso(),
+  }
+  const duplicateCode = db.branches.find((branch) => branch.id !== record.id && branch.code.toLowerCase() === record.code.toLowerCase())
+  if (duplicateCode) throw new Error(`Branch code already belongs to ${duplicateCode.name}`)
+  const before = db.branches.find((branch) => branch.id === record.id)
+  db.branches = before ? db.branches.map((branch) => (branch.id === record.id ? record : branch)) : [record, ...db.branches]
+  if (record.id === 'main') db.settings.branchName = record.name
+  addAudit(db, actorId, before ? 'Updated branch' : 'Created branch', 'branch', record.id, before, record)
+}
+
 function receiveStock(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
   const actor = db.users.find((user) => user.id === actorId)
   if (!actor || !canWrite({ ...actor, role: actorRole })) throw new Error('You do not have permission to receive stock')
   const supplierId = requireString(payload?.supplierId, 'Supplier')
   if (!db.suppliers.some((supplier) => supplier.id === supplierId)) throw new Error('Supplier not found')
+  const branchId = optionalString(payload?.branchId) || db.branches.find((branch) => branch.active)?.id || 'main'
+  if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
   const inputs = Array.isArray(payload?.items)
     ? (payload.items as Record<string, unknown>[])
     : [{
@@ -215,17 +248,22 @@ function receiveStock(db: Database, actorId: string, actorRole: Role, payload: R
     if (!db.medicines.some((medicine) => medicine.id === medicineId)) throw new Error('Medicine not found')
     const quantity = requireNumber(input.quantity, 'Quantity')
     if (quantity <= 0) throw new Error('Quantity must be greater than zero')
+    const expiryDate = requireString(input.expiryDate, 'Expiry date')
+    if (expiryDate < today()) throw new Error('Expiry date must be today or a future date')
+    const unitCost = Number(input.unitCost) || 0
+    const sellingPrice = Number(input.sellingPrice) || 0
+    if (sellingPrice > 0 && sellingPrice < unitCost) throw new Error('Selling price cannot be lower than unit cost')
     const batch = {
       id: id('bat'),
       medicineId,
       supplierId,
       batchNumber: requireString(input.batchNumber, 'Batch number'),
-      expiryDate: requireString(input.expiryDate, 'Expiry date'),
-      unitCost: Number(input.unitCost) || 0,
-      sellingPrice: Number(input.sellingPrice) || 0,
+      expiryDate,
+      unitCost,
+      sellingPrice,
       receivedDate: today(),
       location: optionalString(input.location) || 'Main Store',
-      branchId: 'main',
+      branchId,
     }
     const ledger = {
       id: id('led'),
@@ -252,10 +290,12 @@ function issueStock(db: Database, actorId: string, actorRole: Role, payload: Rec
   const actor = db.users.find((user) => user.id === actorId)
   if (!actor || !canWrite({ ...actor, role: actorRole })) throw new Error('You do not have permission to issue stock')
   const medicineId = requireString(payload?.medicineId, 'Medicine')
+  const branchId = optionalString(payload?.branchId) || db.branches.find((branch) => branch.active)?.id || 'main'
+  if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
   const quantity = requireNumber(payload?.quantity, 'Quantity')
   if (quantity <= 0) throw new Error('Quantity must be greater than zero')
   const rows = db.batches
-    .filter((batch) => batch.medicineId === medicineId)
+    .filter((batch) => batch.branchId === branchId && batch.medicineId === medicineId)
     .map((batch) => ({
       batch,
       quantity: db.ledger.filter((entry) => entry.batchId === batch.id).reduce((sum, entry) => sum + entry.quantity, 0),
@@ -319,7 +359,10 @@ function updateSettings(db: Database, actorId: string, actorRole: Role, payload:
   const before = { ...db.settings }
   db.settings = {
     pharmacyName: optionalString(payload?.pharmacyName) || db.settings.pharmacyName,
+    softwareName: optionalString(payload?.softwareName) || db.settings.softwareName,
+    accountName: optionalString(payload?.accountName) || db.settings.accountName,
     branchName: optionalString(payload?.branchName) || db.settings.branchName,
+    primaryAdminId: db.settings.primaryAdminId || actorId,
     nearExpiryDays: Number(payload?.nearExpiryDays) || db.settings.nearExpiryDays,
     approvalThreshold: Number(payload?.approvalThreshold) || db.settings.approvalThreshold,
   }

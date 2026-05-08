@@ -52,6 +52,7 @@ td span,
 .alert-item span,
 .audit-item span,
 .supplier-card span,
+.branch-card span,
 .section-heading p,
 .login-panel p {
   color: #68777e;
@@ -274,6 +275,7 @@ td span,
 .alert-list,
 .audit-list,
 .supplier-grid,
+.branch-grid,
 .stack {
   display: grid;
   gap: 10px;
@@ -281,7 +283,8 @@ td span,
 
 .alert-item,
 .audit-item,
-.supplier-card {
+.supplier-card,
+.branch-card {
   border: 1px solid #e3eaeb;
   border-radius: 8px;
   padding: 12px;
@@ -609,11 +612,13 @@ button:disabled {
   font-size: 13px;
 }
 
-.supplier-card {
+.supplier-card,
+.branch-card {
   justify-content: space-between;
 }
 
-.supplier-card > div {
+.supplier-card > div,
+.branch-card > div {
   flex: 1;
 }
 
