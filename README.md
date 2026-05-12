@@ -39,6 +39,10 @@ Operational pharmacy inventory app for Nigerian pharmacies and medical sites. Rx
 
 RxLedger currently treats the main account as the company dashboard. Stock belongs to branches/sites, not to the main account itself. This keeps the current MVP simple while preparing the product for future billing plans and full multi-tenant SaaS isolation.
 
+## UI Development Rule
+
+Scrollable panels should scroll independently, like an analytics dashboard with many components. The sidebar/control panel, dropdown lists, dashboard cards, tables, and chat timelines should contain their own scrolling when the pointer is over them; the main workspace should only scroll when the pointer is on the main page.
+
 ## Run Locally
 
 ```bash

@@ -22,8 +22,13 @@
   display: flex;
   flex-direction: column;
   gap: 24px;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   position: sticky;
+  scrollbar-gutter: stable;
   top: 0;
 }
 
@@ -211,6 +216,8 @@ td span,
   width: min(280px, 80vw);
   max-height: 200px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   border: 1px solid #cbd7d8;
   border-radius: 8px;
   background: white;
@@ -322,12 +329,16 @@ td span,
 .dashboard-scroll-list {
   max-height: 260px;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .dashboard-scroll-table {
   max-height: 320px;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .section-heading {
@@ -406,6 +417,7 @@ td span,
 .table-wrap {
   width: 100%;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 table {
@@ -831,6 +843,7 @@ button:disabled {
   border-bottom: 1px solid #dfe7e8;
   margin-bottom: 14px;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .tabs button {
@@ -897,7 +910,9 @@ button:disabled {
   gap: 10px;
   max-height: 58vh;
   overflow: auto;
+  overscroll-behavior: contain;
   padding-right: 4px;
+  scrollbar-gutter: stable;
 }
 
 .chat-message {
