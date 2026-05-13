@@ -525,7 +525,6 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
   const lastChatSeen = currentUser.lastChatSeenAt ? new Date(currentUser.lastChatSeenAt).getTime() : 0
   const unreadChat = db.chatMessages.filter((message) => message.userId !== currentUser.id && new Date(message.createdAt).getTime() > lastChatSeen)
   const pendingUsers = db.users.filter((user) => user.status === 'pending')
-  const visibleSecurityEvents = db.securityEvents.filter((event) => currentUser.role === 'admin' || event.userId === currentUser.id)
   const relevantRequisitions = db.requisitions.filter((request) => (
     currentUser.role === 'admin' ||
     request.requesterUserId === currentUser.id ||
@@ -563,18 +562,6 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
       })
     })
   }
-
-  visibleSecurityEvents.slice(0, 8).forEach((event) => {
-    const user = db.users.find((item) => item.id === event.userId)
-    notifications.push({
-      id: `security-${event.id}`,
-      tone: event.severity === 'critical' ? 'danger' : event.severity === 'warning' ? 'warning' : 'info',
-      title: securityEventLabels[event.type],
-      detail: currentUser.role === 'admin' ? `${user?.name ?? event.email}: ${event.detail}` : event.detail,
-      view: currentUser.role === 'admin' ? 'users' : 'notifications',
-      createdAt: event.createdAt,
-    })
-  })
 
   incomingRequisitions.forEach((request) => {
     notifications.push({
@@ -937,14 +924,20 @@ function App() {
           })}
         </nav>
 
-        <div className="user-panel">
-          <div>
-            <strong>{currentUser.name}</strong>
-            <span>{roleLabels[currentUser.role]}</span>
-          </div>
-          <button className="icon-button" type="button" onClick={() => { void signOut() }} title="Log out">
-            <LogOut size={18} />
+        <div className="sidebar-bottom">
+          <button className="sidebar-security-button" type="button" onClick={triggerSecurityPanic} title="Sign out other sessions and record a security alert">
+            <ShieldCheck size={17} />
+            <span>Secure account</span>
           </button>
+          <div className="user-panel">
+            <div>
+              <strong>{currentUser.name}</strong>
+              <span>{roleLabels[currentUser.role]}</span>
+            </div>
+            <button className="icon-button" type="button" onClick={() => { void signOut() }} title="Log out">
+              <LogOut size={18} />
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -1007,10 +1000,6 @@ function App() {
                 {pendingAdminTasks} pending
               </button>
             )}
-            <button className="ghost-button danger-action" type="button" onClick={triggerSecurityPanic} title="Sign out other sessions and record a security alert">
-              <ShieldCheck size={16} />
-              Secure account
-            </button>
             {notifications.length > 0 && (
               <button className="ghost-button" type="button" onClick={() => navigate('notifications')}>
                 <Bell size={16} />
@@ -1603,7 +1592,7 @@ function Medicines({
   const totalCatalogCost = stockRows.reduce((sum, row) => sum + Math.max(0, row.costValue), 0)
 
   const visible = db.medicines.filter((medicine) => {
-    const text = `${medicine.sku} ${medicine.brandName} ${medicine.genericName} ${medicine.form} ${medicine.strength} ${medicine.nafdacNumber} ${medicine.barcodes.join(' ')}`.toLowerCase()
+    const text = `${medicine.sku} ${medicine.brandName} ${medicine.genericName} ${medicine.form} ${medicine.strength} ${medicine.category} ${medicine.nafdacNumber} ${medicine.barcodes.join(' ')}`.toLowerCase()
     return text.includes(query.toLowerCase())
   })
   const requestableBranches = getActiveBranches(db).filter((branch) => branch.id !== activeBranch?.id && (currentUser.role === 'admin' || currentUser.branchIds.includes(branch.id) || currentUser.managedBranchIds.includes(branch.id)))
@@ -1807,6 +1796,7 @@ function Medicines({
             <thead>
               <tr>
                 <th>Medicine</th>
+                <th>Category</th>
                 <th>SKU</th>
                 <th>NAFDAC</th>
                 <th>Barcode</th>
@@ -1823,6 +1813,7 @@ function Medicines({
                     <td>
                       <MedicineIdentity medicine={medicine} />
                     </td>
+                    <td>{medicine.category || '-'}</td>
                     <td>{medicine.sku}</td>
                     <td>{medicine.nafdacNumber || '-'}</td>
                     <td>{medicine.barcodes[0] ?? '-'}</td>
@@ -1842,7 +1833,7 @@ function Medicines({
                   </tr>
                 ))
               ) : (
-                <tr><td colSpan={8}>No medicine records yet. Add the pharmacy catalog before receiving stock.</td></tr>
+                <tr><td colSpan={9}>No medicine records yet. Add the pharmacy catalog before receiving stock.</td></tr>
               )}
             </tbody>
           </table>
@@ -2400,8 +2391,10 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
   const [movementType, setMovementType] = useState('')
   const [medicineFilter, setMedicineFilter] = useState('')
   const [genericFilter, setGenericFilter] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('')
   const [supplierFilter, setSupplierFilter] = useState('')
   const [supplierDate, setSupplierDate] = useState('')
+  const categories = useMemo(() => Array.from(new Set(db.medicines.map((medicine) => medicine.category).filter(Boolean))).sort((a, b) => a.localeCompare(b)), [db.medicines])
 
   const rows: ReportRow[] = useMemo(() => {
     const scopedBatchIds = new Set(stockRows.map((row) => row.batch.id))
@@ -2413,7 +2406,8 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
           return (!movementDate || entry.createdAt.slice(0, 10) === movementDate) &&
             (!movementType || entry.type === movementType) &&
             (!medicineFilter || medicine?.brandName.toLowerCase().includes(medicineFilter.toLowerCase())) &&
-            (!genericFilter || medicine?.genericName.toLowerCase().includes(genericFilter.toLowerCase()))
+            (!genericFilter || medicine?.genericName.toLowerCase().includes(genericFilter.toLowerCase())) &&
+            (!categoryFilter || medicine?.category === categoryFilter)
         })
         .map((entry) => {
           const medicine = db.medicines.find((item) => item.id === entry.medicineId)
@@ -2430,6 +2424,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
             Generic: medicine?.genericName ?? '-',
             Form: medicine?.form ?? '-',
             Strength: medicine?.strength ?? '-',
+            Category: medicine?.category || '-',
             Batch: batch?.batchNumber ?? '-',
             Branch: branchName,
             From: from,
@@ -2456,6 +2451,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
             Generic: medicine?.genericName ?? '-',
             Form: medicine?.form ?? '-',
             Strength: medicine?.strength ?? '-',
+            Category: medicine?.category || '-',
             Batch: batch?.batchNumber ?? item.batchId,
             Expiry: batch?.expiryDate ?? '-',
             Quantity: item.quantity,
@@ -2473,6 +2469,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
           Generic: row.medicine.genericName,
           Form: row.medicine.form,
           Strength: row.medicine.strength,
+          Category: row.medicine.category || '-',
           Batch: row.batch.batchNumber,
           Expiry: row.batch.expiryDate,
           Days: row.daysToExpiry,
@@ -2491,6 +2488,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
           Generic: medicine.genericName,
           Form: medicine.form,
           Strength: medicine.strength,
+          Category: medicine.category || '-',
           Available: stockTotals.get(medicine.id) ?? 0,
           'Reorder Level': medicine.reorderLevel,
           Manufacturer: medicine.manufacturer,
@@ -2502,6 +2500,7 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
       Generic: row.medicine.genericName,
       Form: row.medicine.form,
       Strength: row.medicine.strength,
+      Category: row.medicine.category || '-',
       Batch: row.batch.batchNumber,
       Expiry: row.batch.expiryDate,
       Quantity: row.quantity,
@@ -2511,7 +2510,8 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
       Branch: row.branch?.name ?? row.batch.branchId,
       Location: row.batch.location,
     }))
-  }, [db, genericFilter, medicineFilter, movementDate, movementType, report, stockRows, stockTotals, supplierDate, supplierFilter])
+  }, [categoryFilter, db, genericFilter, medicineFilter, movementDate, movementType, report, stockRows, stockTotals, supplierDate, supplierFilter])
+  const movementQuantityTotal = report === 'movement' ? rows.reduce((sum, row) => sum + Number(row.Quantity ?? 0), 0) : 0
 
   return (
     <section className="content-section">
@@ -2544,12 +2544,20 @@ function Reports({ db, stockRows, stockTotals }: { db: Database; stockRows: Stoc
           <label>Type<select value={movementType} onChange={(event) => setMovementType(event.target.value)}><option value="">All types</option>{Object.entries(movementLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label>Medicine<input value={medicineFilter} onChange={(event) => setMedicineFilter(event.target.value)} placeholder="Brand name" /></label>
           <label>Generic<input value={genericFilter} onChange={(event) => setGenericFilter(event.target.value)} placeholder="Generic name" /></label>
+          <label>Category<select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">All categories</option>{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></label>
         </div>
       )}
       {report === 'supplier' && (
         <div className="report-filters">
           <label>Supplier<select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}><option value="">All suppliers</option>{db.suppliers.map((supplier) => <option key={supplier.id} value={supplier.name}>{supplier.name}</option>)}</select></label>
           <label>Date supplied<input type="date" value={supplierDate} onChange={(event) => setSupplierDate(event.target.value)} /></label>
+        </div>
+      )}
+      {report === 'movement' && (
+        <div className="report-summary">
+          <Archive size={16} />
+          <strong>{number.format(movementQuantityTotal)}</strong>
+          <span>total units moved{categoryFilter ? ` in ${categoryFilter}` : ''}</span>
         </div>
       )}
       <ReportTable rows={rows} />
