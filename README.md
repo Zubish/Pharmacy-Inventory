@@ -79,12 +79,14 @@ Reports should support operational filtering. Supplier reports must show what ea
 
 ## Run Locally
 
+Use Vite only when you want to work on the frontend shell:
+
 ```bash
 npm install
 npm run dev
 ```
 
-Create a `.env.local` file before using API-backed flows locally:
+For login, setup, password reset, stock posting, and every API-backed workflow, create a `.env.local` file first:
 
 ```bash
 DATABASE_URL="postgresql://USER:PASSWORD@HOST/database?sslmode=require"
@@ -99,14 +101,11 @@ SUPPORT_EMAIL="support@yourdomain.com"
 For local API testing, run through Vercel's local runtime:
 
 ```bash
-npx vercel dev
+npm run dev:api
 ```
 
-Open the local URL shown by Vite or Vercel, usually:
+Open the local URL shown by Vite or Vercel.
 
-```text
-http://127.0.0.1:5173/
-```
 
 ## Validate
 
