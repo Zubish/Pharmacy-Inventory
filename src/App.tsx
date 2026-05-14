@@ -414,6 +414,10 @@ function MedicineIdentity({ medicine }: { medicine: Medicine }) {
   )
 }
 
+function authBrandName(value: string) {
+  return /^https?:\/\//i.test(value.trim()) || value.includes('://') ? 'Totalenergies Pharmacy Inventory' : value
+}
+
 function createEmptyDatabase(): Database {
   return {
     users: [],
@@ -1265,6 +1269,7 @@ function AuthScreen({
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const activeMode: AuthMode = hasUsers ? mode : 'setup'
+  const displayPharmacyName = authBrandName(pharmacyName)
 
   return (
     <main className="login-screen">
@@ -1273,7 +1278,7 @@ function AuthScreen({
           <Pill size={30} />
         </div>
         <div>
-          <span className="eyebrow">{activeMode === 'setup' ? 'RxLedger setup' : pharmacyName}</span>
+          <span className="eyebrow">{activeMode === 'setup' ? 'RxLedger setup' : displayPharmacyName}</span>
           <h1>{activeMode === 'setup' ? 'Create your pharmacy account' : 'Sign in to RxLedger'}</h1>
           <p>{activeMode === 'setup' ? 'Create the company account, first branch, and permanent administrator before adding medicines, suppliers, and stock.' : 'Use your approved staff account. New staff can request access for admin review.'}</p>
         </div>
