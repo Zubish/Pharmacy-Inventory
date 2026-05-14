@@ -57,6 +57,16 @@ Refreshing the browser should preserve a valid active session. Users should only
 
 Staff should have one active working branch at a time. A branch manager can assign free staff into their own branch and can release staff from that branch. Another branch manager cannot pull a staff member until the current branch manager releases them; the permanent admin can override normal staff transfers when needed.
 
+In-app notifications should be scoped to the current branch workspace. Super admin keeps global access rights but should see branch operational alerts only for the branch they are currently viewing; account-level alerts such as pending staff approval remain super-admin-only. Branch managers, pharmacists, inventory officers, and viewers should see low-stock, reorder, expiry, expired-batch, and requisition notifications for the branch they are viewing according to their access.
+
+## Access Rights Draft
+
+- Super Admin: global account control, branch creation, branch manager assignment, user activation/suspension, transfer override, all reports, all audit/security visibility.
+- Branch Manager: delegated branch control, staff assignment/release for their branch, branch receiving, issuing, adjustment/returns, branch reports, branch alerts, and requisition handling.
+- Pharmacist: assigned-branch medicine operations, issue/dispense stock, receive where allowed by branch workflow, adjustments/returns, requisitions, branch reports, and branch alerts.
+- Inventory Officer: assigned-branch inventory operations, receiving, stock counts/adjustment support, requisitions, branch reports, and branch alerts. Super admin may later grant temporary pharmacist-like authority when policy allows.
+- Viewer/Auditor: view-only branch data, branch reports, and branch alerts. No stock-changing actions.
+
 Password forms should support show/hide controls. Signup, setup, and password reset must require password confirmation before submission; the new-password eye icon controls both new and confirm fields.
 
 Internal medicine requisitions should stay lightweight and modal-based. Users can request available stock from other branches even when they only have view access there; the request is sent to the supplying branch team, does not deduct stock until fulfilled, and remains visible in history to the concerned branches. Admins can view all requisitions globally.

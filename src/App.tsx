@@ -298,6 +298,8 @@ type AppNotification = {
   title: string
   detail: string
   view: View
+  branchId?: string
+  audience?: 'branch' | 'super-admin'
   createdAt?: string
 }
 
@@ -554,7 +556,13 @@ function exportCsv(filename: string, rows: ReportRow[]) {
   URL.revokeObjectURL(url)
 }
 
-function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Map<string, number>, currentUser: User): AppNotification[] {
+function isNotificationVisible(db: Database, currentUser: User, notification: AppNotification, activeBranch?: Branch) {
+  if (notification.audience === 'super-admin') return isSuperAdmin(db, currentUser)
+  if (!notification.branchId) return true
+  return activeBranch ? notification.branchId === activeBranch.id : true
+}
+
+function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Map<string, number>, currentUser: User, activeBranch?: Branch): AppNotification[] {
   const notifications: AppNotification[] = []
   const lastChatSeen = currentUser.lastChatSeenAt ? new Date(currentUser.lastChatSeenAt).getTime() : 0
   const unreadChat = db.chatMessages.filter((message) => message.userId !== currentUser.id && new Date(message.createdAt).getTime() > lastChatSeen)
@@ -565,7 +573,7 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
     canViewBranch(db, currentUser, request.sourceBranchId) ||
     canViewBranch(db, currentUser, request.requestingBranchId)
   ))
-  const incomingRequisitions = relevantRequisitions.filter((request) => request.status === 'pending' && (isSuperAdmin(db, currentUser) || canViewBranch(db, currentUser, request.sourceBranchId)))
+  const incomingRequisitions = relevantRequisitions.filter((request) => request.status === 'pending')
   const handledRequisitions = relevantRequisitions.filter((request) => request.requesterUserId === currentUser.id && request.status !== 'pending')
   const scopedMedicineIds = new Set(stockRows.map((row) => row.medicine.id))
   const expired = stockRows.filter((row) => row.quantity > 0 && row.status === 'expired')
@@ -592,18 +600,25 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
         title: `${user.name} is waiting for access`,
         detail: 'Admin should assign the correct role and activate the account.',
         view: 'users',
+        audience: 'super-admin',
         createdAt: user.createdAt,
       })
     })
   }
 
   incomingRequisitions.forEach((request) => {
+    const viewingSourceBranch = activeBranch?.id === request.sourceBranchId
+    const sourceBranch = getBranchName(db, request.sourceBranchId)
+    const requestingBranch = getBranchName(db, request.requestingBranchId)
     notifications.push({
       id: `incoming-requisition-${request.id}`,
       tone: 'info',
-      title: `Medicine request from ${getBranchName(db, request.requestingBranchId)}`,
-      detail: `${request.items.length} item${request.items.length === 1 ? '' : 's'} requested from ${getBranchName(db, request.sourceBranchId)}.`,
+      title: viewingSourceBranch ? `Medicine request from ${requestingBranch}` : `Medicine request to ${sourceBranch}`,
+      detail: viewingSourceBranch
+        ? `${request.items.length} item${request.items.length === 1 ? '' : 's'} requested from this branch.`
+        : `${request.items.length} item${request.items.length === 1 ? '' : 's'} awaiting ${sourceBranch}.`,
       view: 'medicines',
+      branchId: activeBranch?.id === request.requestingBranchId ? request.requestingBranchId : request.sourceBranchId,
       createdAt: request.createdAt,
     })
   })
@@ -615,6 +630,7 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
       title: `Your requisition was ${request.status}`,
       detail: `${getBranchName(db, request.sourceBranchId)} responded to your request.`,
       view: 'medicines',
+      branchId: request.requestingBranchId,
       createdAt: request.updatedAt,
     })
   })
@@ -624,8 +640,9 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
       id: `expired-${row.batch.id}`,
       tone: 'danger',
       title: `${medicineOptionLabel(row.medicine)} has expired stock`,
-      detail: `${row.batch.batchNumber} has ${number.format(row.quantity)} ${row.medicine.unit} in ${row.batch.location}.`,
+      detail: `${getBranchName(db, row.batch.branchId)} / ${row.batch.batchNumber} has ${number.format(row.quantity)} ${row.medicine.unit} in ${row.batch.location}.`,
       view: 'reports',
+      branchId: row.batch.branchId,
     })
   })
 
@@ -634,8 +651,9 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
       id: `near-${row.batch.id}`,
       tone: 'warning',
       title: `${medicineOptionLabel(row.medicine)} expires in ${row.daysToExpiry} days`,
-      detail: `${row.batch.batchNumber}, ${number.format(row.quantity)} ${row.medicine.unit} available.`,
+      detail: `${getBranchName(db, row.batch.branchId)} / ${row.batch.batchNumber}, ${number.format(row.quantity)} ${row.medicine.unit} available.`,
       view: 'reports',
+      branchId: row.batch.branchId,
     })
   })
 
@@ -644,8 +662,9 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
       id: `out-${medicine.id}`,
       tone: 'danger',
       title: `${medicineOptionLabel(medicine)} is out of stock`,
-      detail: `Reorder level is ${number.format(medicine.reorderLevel)} ${medicine.unit}.`,
+      detail: `${activeBranch?.name ?? 'Current branch'} / reorder level is ${number.format(medicine.reorderLevel)} ${medicine.unit}.`,
       view: 'medicines',
+      branchId: activeBranch?.id,
     })
   })
 
@@ -656,12 +675,15 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
         id: `low-${medicine.id}`,
         tone: 'info',
         title: `${medicineOptionLabel(medicine)} is low on stock`,
-        detail: `Available: ${number.format(stockTotals.get(medicine.id) ?? 0)}. Reorder level: ${number.format(medicine.reorderLevel)}.`,
+        detail: `${activeBranch?.name ?? 'Current branch'} / available: ${number.format(stockTotals.get(medicine.id) ?? 0)}. Reorder level: ${number.format(medicine.reorderLevel)}.`,
         view: 'medicines',
+        branchId: activeBranch?.id,
       })
     })
 
-  return notifications.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
+  return notifications
+    .filter((notification) => isNotificationVisible(db, currentUser, notification, activeBranch))
+    .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
 }
 
 type ExecuteAction = (action: string, payload: Record<string, unknown>, successMessage?: string) => Promise<void>
@@ -694,7 +716,6 @@ function App() {
   const stockRows = useMemo(() => getStockRows(db), [db])
   const activeBranchStockRows = useMemo(() => activeBranch ? stockRows.filter((row) => row.batch.branchId === activeBranch.id) : stockRows, [activeBranch, stockRows])
   const permittedStockRows = useMemo(() => currentUser ? stockRows.filter((row) => canViewBranch(db, currentUser, row.batch.branchId)) : [], [currentUser, db, stockRows])
-  const permittedStockTotals = useMemo(() => aggregateMedicineStock(permittedStockRows), [permittedStockRows])
   const canWrite = currentUser ? currentUser.role !== 'viewer' : false
   const canAdjust = currentUser ? currentUser.role === 'admin' || currentUser.role === 'pharmacist' : false
   const canAdmin = isSuperAdmin(db, currentUser)
@@ -702,8 +723,10 @@ function App() {
   const dashboardStockTotals = useMemo(() => aggregateMedicineStock(dashboardStockRows), [dashboardStockRows])
   const medicinePageStockRows = activeBranchStockRows
   const medicinePageStockTotals = useMemo(() => aggregateMedicineStock(medicinePageStockRows), [medicinePageStockRows])
+  const notificationStockRows = activeBranch ? activeBranchStockRows : permittedStockRows
+  const notificationStockTotals = useMemo(() => aggregateMedicineStock(notificationStockRows), [notificationStockRows])
   const canWriteActiveBranch = currentUser && activeBranch ? canWriteBranch(db, currentUser, activeBranch.id) : false
-  const notifications = useMemo(() => currentUser ? buildNotifications(db, permittedStockRows, permittedStockTotals, currentUser) : [], [currentUser, db, permittedStockRows, permittedStockTotals])
+  const notifications = useMemo(() => currentUser ? buildNotifications(db, notificationStockRows, notificationStockTotals, currentUser, activeBranch) : [], [activeBranch, currentUser, db, notificationStockRows, notificationStockTotals])
 
   useEffect(() => {
     async function load() {
@@ -1072,7 +1095,7 @@ function App() {
               <span>Loading {branchSwitchLabel} workspace...</span>
             </div>
           )}
-          {activeView === 'dashboard' && <Dashboard db={db} currentUser={currentUser} stockRows={dashboardStockRows} stockTotals={dashboardStockTotals} canAdmin={canAdmin} activeBranch={activeBranch} assignedBranch={assignedBranch} setActiveView={setActiveView} />}
+          {activeView === 'dashboard' && <Dashboard db={db} currentUser={currentUser} stockRows={dashboardStockRows} alertStockRows={notificationStockRows} alertStockTotals={notificationStockTotals} canAdmin={canAdmin} activeBranch={activeBranch} assignedBranch={assignedBranch} setActiveView={setActiveView} />}
           {activeView === 'medicines' && <Medicines db={db} currentUser={currentUser} stockRows={medicinePageStockRows} stockTotals={medicinePageStockTotals} activeBranch={activeBranch} canWrite={Boolean(canWriteActiveBranch)} canFulfillActiveBranch={Boolean(canWriteActiveBranch)} executeAction={executeAction} flash={flash} />}
           {activeView === 'suppliers' && <Suppliers db={db} canWrite={canWrite} executeAction={executeAction} />}
           {activeView === 'receive' && activeBranch && <ReceiveStock db={db} activeBranch={activeBranch} canWrite={Boolean(canWriteActiveBranch)} executeAction={executeAction} flash={flash} />}
@@ -1453,7 +1476,8 @@ function Dashboard({
   db,
   currentUser,
   stockRows,
-  stockTotals,
+  alertStockRows,
+  alertStockTotals,
   canAdmin,
   activeBranch,
   assignedBranch,
@@ -1462,19 +1486,21 @@ function Dashboard({
   db: Database
   currentUser: User
   stockRows: StockRow[]
-  stockTotals: Map<string, number>
+  alertStockRows: StockRow[]
+  alertStockTotals: Map<string, number>
   canAdmin: boolean
   activeBranch?: Branch
   assignedBranch?: Branch
   setActiveView: (view: View) => void
 }) {
   const scopedMedicineIds = new Set(stockRows.map((row) => row.medicine.id))
-  const lowStock = db.medicines.filter((medicine) => scopedMedicineIds.has(medicine.id) && (stockTotals.get(medicine.id) ?? 0) > 0 && (stockTotals.get(medicine.id) ?? 0) <= medicine.reorderLevel)
-  const nearExpiry = stockRows.filter((row) => row.quantity > 0 && row.status === 'near-expiry')
-  const expired = stockRows.filter((row) => row.quantity > 0 && row.status === 'expired')
+  const alertMedicineIds = new Set(alertStockRows.map((row) => row.medicine.id))
+  const lowStock = db.medicines.filter((medicine) => alertMedicineIds.has(medicine.id) && (alertStockTotals.get(medicine.id) ?? 0) > 0 && (alertStockTotals.get(medicine.id) ?? 0) <= medicine.reorderLevel)
+  const nearExpiry = alertStockRows.filter((row) => row.quantity > 0 && row.status === 'near-expiry')
+  const expired = alertStockRows.filter((row) => row.quantity > 0 && row.status === 'expired')
   const costValue = stockRows.reduce((sum, row) => sum + Math.max(0, row.costValue), 0)
   const activeSkuCount = canAdmin ? db.medicines.filter((medicine) => medicine.active).length : scopedMedicineIds.size
-  const permittedBatchIds = new Set(stockRows.map((row) => row.batch.id))
+  const permittedBatchIds = new Set(alertStockRows.map((row) => row.batch.id))
   const todayMovements = db.ledger.filter((entry) => entry.createdAt.slice(0, 10) === today() && permittedBatchIds.has(entry.batchId)).length
   const pendingUsers = canAdmin ? db.users.filter((user) => user.status === 'pending').length : 0
   const activeBranches = canAdmin ? getActiveBranches(db).filter((branch) => canViewBranch(db, currentUser, branch.id)) : getActiveBranches(db).filter((branch) => branch.id === activeBranch?.id)
@@ -1536,7 +1562,7 @@ function Dashboard({
         <div className="section-heading">
           <div>
             <h2>Operational Alerts</h2>
-            <p>Low stock, expiry risk, expired inventory, and access approvals.</p>
+            <p>{activeBranch ? `${activeBranch.name} alerts based on current branch scope.` : 'Low stock, expiry risk, expired inventory, and access approvals.'}</p>
           </div>
           <button className="ghost-button" type="button" onClick={() => setActiveView('reports')}>
             <FileText size={16} />
@@ -1554,7 +1580,7 @@ function Dashboard({
             <AlertItem key={row.batch.id} tone="warning" title={<MedicineIdentity medicine={row.medicine} />} detail={`Batch ${row.batch.batchNumber} expires in ${row.daysToExpiry} days. ${number.format(row.quantity)} ${row.medicine.unit} available`} />
           ))}
           {lowStock.map((medicine) => (
-            <AlertItem key={medicine.id} tone="info" title={<MedicineIdentity medicine={medicine} />} detail={`At or below reorder level. Available: ${number.format(stockTotals.get(medicine.id) ?? 0)}. Reorder level: ${number.format(medicine.reorderLevel)}`} />
+            <AlertItem key={medicine.id} tone="info" title={<MedicineIdentity medicine={medicine} />} detail={`At or below reorder level. Available: ${number.format(alertStockTotals.get(medicine.id) ?? 0)}. Reorder level: ${number.format(medicine.reorderLevel)}`} />
           ))}
           {!pendingUsers && !expired.length && !nearExpiry.length && !lowStock.length && (
             <AlertItem tone="good" title="No active inventory alerts" detail="Stock levels, expiry windows, and access approvals are currently clear." />
