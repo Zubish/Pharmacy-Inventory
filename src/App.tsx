@@ -520,6 +520,11 @@ function getUserHomeRoleLabel(db: Database, user: User, branchId?: string) {
   return roleLabels[user.role]
 }
 
+function getOtherAssignedBranch(db: Database, user: User, branchId: string) {
+  const otherId = [...user.managedBranchIds, ...user.branchIds].find((id) => id !== branchId)
+  return otherId ? db.branches.find((branch) => branch.id === otherId) : undefined
+}
+
 function findMedicineByScan(db: Database, scan: string) {
   const needle = scan.trim().toLowerCase()
   return db.medicines.find(
@@ -3025,7 +3030,7 @@ function BranchesView({
             <div className="section-heading">
               <div>
                 <h2>{selectedBranch.name} Staff Access</h2>
-                <p>Users without access can view this branch only. Assigned users can work here according to their role.</p>
+                <p>Users can work in one assigned branch at a time. Their current branch manager must release them before another manager can assign them.</p>
               </div>
               <span className={canManageSelected ? 'pill active' : 'pill muted'}>{canManageSelected ? 'Can authorize' : 'View only'}</span>
             </div>
@@ -3033,11 +3038,18 @@ function BranchesView({
               {assignableUsers.map((user) => {
                 const hasAccess = user.branchIds.includes(selectedBranch.id) || user.managedBranchIds.includes(selectedBranch.id)
                 const isManager = user.managedBranchIds.includes(selectedBranch.id)
+                const otherAssignedBranch = getOtherAssignedBranch(db, user, selectedBranch.id)
+                const waitingForRelease = Boolean(otherAssignedBranch && !hasAccess && !superAdmin)
                 return (
                   <label className="access-row" key={user.id}>
-                    <input type="checkbox" checked={hasAccess} onChange={(event) => updateBranchAccess(user, event.target.checked)} disabled={!canManageSelected || isManager} />
-                    <span><strong>{user.name}</strong>{user.email}</span>
-                    <b className={isManager ? 'pill active' : hasAccess ? 'pill good' : 'pill muted'}>{isManager ? 'Manager' : hasAccess ? roleLabels[user.role] : 'View only'}</b>
+                    <input type="checkbox" checked={hasAccess} onChange={(event) => updateBranchAccess(user, event.target.checked)} disabled={!canManageSelected || isManager || waitingForRelease} />
+                    <span>
+                      <strong>{user.name}</strong>
+                      {user.email}
+                      {waitingForRelease && <small>Assigned to {otherAssignedBranch?.name}. That branch manager must release this user first.</small>}
+                      {otherAssignedBranch && superAdmin && !hasAccess && <small>Assigned to {otherAssignedBranch.name}. Super admin can override this transfer.</small>}
+                    </span>
+                    <b className={isManager ? 'pill active' : hasAccess ? 'pill good' : waitingForRelease ? 'pill warning' : 'pill muted'}>{isManager ? 'Manager' : hasAccess ? roleLabels[user.role] : waitingForRelease ? 'Needs release' : 'View only'}</b>
                   </label>
                 )
               })}

@@ -53,6 +53,8 @@ Forgot-password recovery is user-owned, not admin-approved. The user requests a 
 
 Only the permanent first admin is global. Branch managers and branch-scoped admin users keep delegated admin-style power only inside their assigned/managed branch; outside it they are view-only. Login should default users to their assigned branch, and branch selectors should keep the assigned branch visibly marked and listed first.
 
+Staff should have one active working branch at a time. A branch manager can assign free staff into their own branch and can release staff from that branch. Another branch manager cannot pull a staff member until the current branch manager releases them; the permanent admin can override normal staff transfers when needed.
+
 Password forms should support show/hide controls. Signup, setup, and password reset must require password confirmation before submission; the new-password eye icon controls both new and confirm fields.
 
 Internal medicine requisitions should stay lightweight and modal-based. Users can request available stock from other branches even when they only have view access there; the request is sent to the supplying branch team, does not deduct stock until fulfilled, and remains visible in history to the concerned branches. Admins can view all requisitions globally.

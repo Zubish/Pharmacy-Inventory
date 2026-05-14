@@ -189,12 +189,19 @@ function updateBranchAccess(db: Database, actorId: string, payload: Record<strin
   if (!target) throw new Error('User not found')
   if (target.status !== 'active') throw new Error('Only active users can be assigned to branches')
   if (target.id === primaryAdminId) throw new Error('The permanent admin already has access to every branch')
-  if (target.managedBranchIds.includes(branchId)) throw new Error('Branch managers cannot be removed from their managed branch here')
   const canAccess = Boolean(payload?.canAccess)
+  if (!canAccess && target.managedBranchIds.includes(branchId)) throw new Error('Branch managers cannot be removed from their managed branch here')
+  const otherManagedBranchIds = target.managedBranchIds.filter((id) => id !== branchId)
+  if (canAccess && otherManagedBranchIds.length) {
+    throw new Error('This user manages another branch. Change their manager assignment before moving them.')
+  }
+  const otherBranchIds = target.branchIds.filter((id) => id !== branchId)
+  if (canAccess && otherBranchIds.length && !canAdmin(actor, primaryAdminId)) {
+    const currentBranch = db.branches.find((item) => item.id === otherBranchIds[0])
+    throw new Error(`${target.name} is still assigned to ${currentBranch?.name ?? 'another branch'}. That branch manager must release them before they can work here.`)
+  }
   const before = { ...target, branchIds: [...target.branchIds], managedBranchIds: [...target.managedBranchIds] }
-  target.branchIds = canAccess
-    ? Array.from(new Set([...target.branchIds, branchId]))
-    : target.branchIds.filter((id) => id !== branchId)
+  target.branchIds = canAccess ? [branchId] : target.branchIds.filter((id) => id !== branchId)
   addAudit(db, actorId, canAccess ? 'Granted branch access' : 'Removed branch access', 'user', userId, before, { ...target })
 }
 

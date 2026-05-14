@@ -1116,6 +1116,13 @@ button:disabled {
   color: #182126;
 }
 
+.access-row small {
+  color: #9a6510;
+  display: block;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
 .value-summary {
   min-height: 38px;
   border: 1px solid #dbe7e4;
