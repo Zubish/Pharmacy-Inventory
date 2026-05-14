@@ -47,6 +47,7 @@ import {
   bootstrap,
   clearStoredToken,
   getStoredToken,
+  loadState,
   login as apiLogin,
   logout as apiLogout,
   completePasswordReset as apiCompletePasswordReset,
@@ -493,7 +494,7 @@ function canViewBranch(db: Database, user: User, branchId: string) {
 function getUserHomeBranch(db: Database, user: User | null | undefined) {
   const activeBranches = getActiveBranches(db)
   if (!user) return activeBranches[0] ?? db.branches[0]
-  if (isSuperAdmin(db, user)) return activeBranches.find((branch) => branch.id === 'main') ?? activeBranches[0] ?? db.branches[0]
+  if (isSuperAdmin(db, user)) return undefined
   const homeId = user.managedBranchIds[0] || user.branchIds[0] || activeBranches.find((branch) => branch.managerUserId === user.id)?.id
   return activeBranches.find((branch) => branch.id === homeId) ?? activeBranches[0] ?? db.branches[0]
 }
@@ -671,6 +672,7 @@ function App() {
   const [activeView, setActiveView] = useState<View>('dashboard')
   const [notice, setNotice] = useState('')
   const [loading, setLoading] = useState(true)
+  const [signingIn, setSigningIn] = useState(false)
   const [connectionError, setConnectionError] = useState('')
   const [hasUsers, setHasUsers] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -713,7 +715,12 @@ function App() {
         }
         setHasUsers(boot.hasUsers)
         setDb((previous) => ({ ...previous, settings: boot.settings }))
-        if (getStoredToken()) clearStoredToken()
+        if (getStoredToken()) {
+          const state = await loadState()
+          setDb(state.db)
+          setSessionUserId(state.currentUser.id)
+          setActiveBranchId(getUserHomeBranch(state.db, state.currentUser)?.id ?? state.db.branches.find((branch) => branch.active)?.id ?? 'main')
+        }
       } catch (error) {
         clearStoredToken()
         setSessionUserId(null)
@@ -760,12 +767,17 @@ function App() {
   }
 
   async function createFirstAdmin(input: SetupInput) {
-    const result = await setupWorkspace(input)
-    setDb(result.db)
-    setSessionUserId(result.currentUser.id)
-    setHasUsers(true)
-    setActiveBranchId(getUserHomeBranch(result.db, result.currentUser)?.id ?? result.db.branches[0]?.id ?? 'main')
-    setActiveView('dashboard')
+    setSigningIn(true)
+    try {
+      const result = await setupWorkspace(input)
+      setDb(result.db)
+      setSessionUserId(result.currentUser.id)
+      setHasUsers(true)
+      setActiveBranchId(getUserHomeBranch(result.db, result.currentUser)?.id ?? result.db.branches.find((branch) => branch.active)?.id ?? 'main')
+      setActiveView('dashboard')
+    } finally {
+      setSigningIn(false)
+    }
   }
 
   async function registerUser(input: RegisterInput) {
@@ -786,12 +798,17 @@ function App() {
   }
 
   async function signIn(email: string, password: string) {
-    const result = await apiLogin(email, password)
-    setDb(result.db)
-    setSessionUserId(result.currentUser.id)
-    setConnectionError('')
-    setActiveBranchId(getUserHomeBranch(result.db, result.currentUser)?.id ?? result.db.branches[0]?.id ?? 'main')
-    setActiveView('dashboard')
+    setSigningIn(true)
+    try {
+      const result = await apiLogin(email, password)
+      setDb(result.db)
+      setSessionUserId(result.currentUser.id)
+      setConnectionError('')
+      setActiveBranchId(getUserHomeBranch(result.db, result.currentUser)?.id ?? result.db.branches.find((branch) => branch.active)?.id ?? 'main')
+      setActiveView('dashboard')
+    } finally {
+      setSigningIn(false)
+    }
   }
 
   async function signOut() {
@@ -900,7 +917,7 @@ function App() {
     return () => window.clearTimeout(branchSwitchTimerRef.current)
   }, [])
 
-  if (loading) return <LoadingScreen />
+  if (loading || signingIn) return <LoadingScreen />
 
   if (!currentUser) {
     return (
@@ -965,7 +982,7 @@ function App() {
           <div className="user-panel">
             <div>
               <strong>{currentUser.name}</strong>
-              <span>{assignedBranch?.name ?? 'No assigned branch'}</span>
+              <span>{canAdmin ? 'Global access' : assignedBranch?.name ?? 'No assigned branch'}</span>
               <span>{getUserHomeRoleLabel(db, currentUser, assignedBranch?.id)}</span>
             </div>
             <button className="icon-button" type="button" onClick={() => { void signOut() }} title="Log out">
@@ -1012,7 +1029,7 @@ function App() {
                   <Building2 size={16} />
                   <span className="branch-trigger-text">
                     <strong>{activeBranch.name}</strong>
-                    <small>{assignedBranch?.id === activeBranch.id ? 'Assigned branch' : `Assigned: ${assignedBranch?.name ?? 'None'}`}</small>
+                    <small>{canAdmin ? 'Global super admin' : assignedBranch?.id === activeBranch.id ? 'Assigned branch' : `Assigned: ${assignedBranch?.name ?? 'None'}`}</small>
                   </span>
                 </button>
                 {branchMenuOpen && (
@@ -1025,7 +1042,7 @@ function App() {
                         onClick={() => switchActiveBranch(branch.id)}
                       >
                         <span>{branch.name}</span>
-                        {branch.id === assignedBranch?.id && <b><CheckCircle2 size={13} /> Assigned</b>}
+                        {!canAdmin && branch.id === assignedBranch?.id && <b><CheckCircle2 size={13} /> Assigned</b>}
                       </button>
                     ))}
                   </div>

@@ -51,7 +51,9 @@ Whenever a medicine is displayed, show the brand/medicine name, generic name, do
 
 Forgot-password recovery is user-owned, not admin-approved. The user requests a reset code, verifies ownership through email, and changes the password directly. Admin users can view password reset requests, completions, new-device sign-ins, panic actions, and email failures in the security events log, but they do not approve the reset.
 
-Only the permanent first admin is global. Branch managers and branch-scoped admin users keep delegated admin-style power only inside their assigned/managed branch; outside it they are view-only. Login should default users to their assigned branch, and branch selectors should keep the assigned branch visibly marked and listed first.
+Only the permanent first admin is global and should not have an assigned branch label. Branch managers and branch-scoped admin users keep delegated admin-style power only inside their assigned/managed branch; outside it they are view-only. Login should default non-super-admin users to their assigned branch, and branch selectors should keep the assigned branch visibly marked and listed first.
+
+Refreshing the browser should preserve a valid active session. Users should only be forced to re-enter their password after explicit logout, server/session expiry, or the 30-minute inactivity timeout.
 
 Staff should have one active working branch at a time. A branch manager can assign free staff into their own branch and can release staff from that branch. Another branch manager cannot pull a staff member until the current branch manager releases them; the permanent admin can override normal staff transfers when needed.
 
