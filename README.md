@@ -57,6 +57,10 @@ Refreshing the browser should preserve a valid active session. Users should only
 
 Staff should have one active working branch at a time. A branch manager can assign free staff into their own branch and can release staff from that branch. Another branch manager cannot pull a staff member until the current branch manager releases them; the permanent admin can override normal staff transfers when needed.
 
+The permanent super admin is the company owner role and is not assigned to a branch. They can create branches, assign or reassign branch managers, change user roles, and override ordinary branch transfers. Branch managers are delegated administrators for only their own branch. Branch access can be indefinite or can carry an optional expiry date; expired branch access should behave like view-only access.
+
+Users can request access to a branch without being granted write access automatically. The request notifies the target branch manager and the super admin within that branch workspace; the branch manager grants access only when the staff member is free, while the super admin can still assign or override directly from the access controls.
+
 In-app notifications should be scoped to the current branch workspace. Super admin keeps global access rights but should see branch operational alerts only for the branch they are currently viewing; account-level alerts such as pending staff approval remain super-admin-only. Branch managers, pharmacists, inventory officers, and viewers should see low-stock, reorder, expiry, expired-batch, and requisition notifications for the branch they are viewing according to their access.
 
 ## Access Rights Draft

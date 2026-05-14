@@ -1094,6 +1094,27 @@ button:disabled {
   gap: 8px;
 }
 
+.access-request-box {
+  align-items: center;
+  background: #f4faf8;
+  border: 1px solid #d8ebe4;
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.access-request-box strong,
+.access-request-box span {
+  display: block;
+}
+
+.access-request-box span {
+  color: #5e7178;
+  font-size: 13px;
+}
+
 .access-row {
   justify-content: space-between;
   gap: 10px;
@@ -1121,6 +1142,30 @@ button:disabled {
   display: block;
   font-size: 12px;
   margin-top: 3px;
+}
+
+.access-row-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.access-expiry {
+  align-items: center;
+  color: #5e7178;
+  display: inline-flex;
+  flex-direction: row;
+  font-size: 12px;
+  gap: 6px;
+  min-height: 0;
+}
+
+.access-expiry input {
+  min-height: 32px;
+  min-width: 132px;
+  padding: 5px 8px;
 }
 
 .value-summary {

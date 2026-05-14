@@ -13,6 +13,7 @@ import {
   getBearerToken,
   getRequestIp,
   getRequestUserAgent,
+  hasActiveBranchAssignment,
   id,
   loadDatabase,
   nowIso,
@@ -62,6 +63,9 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
         break
       case 'updateBranchAccess':
         updateBranchAccess(db, actor.id, body.payload)
+        break
+      case 'requestBranchAccess':
+        requestBranchAccess(db, actor.id, body.payload)
         break
       case 'receiveStock':
         receiveStock(db, actor.id, actor.role, body.payload)
@@ -190,19 +194,56 @@ function updateBranchAccess(db: Database, actorId: string, payload: Record<strin
   if (target.status !== 'active') throw new Error('Only active users can be assigned to branches')
   if (target.id === primaryAdminId) throw new Error('The permanent admin already has access to every branch')
   const canAccess = Boolean(payload?.canAccess)
+  const expiresAt = optionalString(payload?.expiresAt)
+  if (canAccess && expiresAt && expiresAt < today()) throw new Error('Branch access expiry must be today or a future date')
   if (!canAccess && target.managedBranchIds.includes(branchId)) throw new Error('Branch managers cannot be removed from their managed branch here')
-  const otherManagedBranchIds = target.managedBranchIds.filter((id) => id !== branchId)
+  const otherManagedBranchIds = target.managedBranchIds.filter((id) => id !== branchId && hasActiveBranchAssignment(target, id))
   if (canAccess && otherManagedBranchIds.length) {
     throw new Error('This user manages another branch. Change their manager assignment before moving them.')
   }
-  const otherBranchIds = target.branchIds.filter((id) => id !== branchId)
+  const otherBranchIds = target.branchIds.filter((id) => id !== branchId && hasActiveBranchAssignment(target, id))
   if (canAccess && otherBranchIds.length && !canAdmin(actor, primaryAdminId)) {
     const currentBranch = db.branches.find((item) => item.id === otherBranchIds[0])
     throw new Error(`${target.name} is still assigned to ${currentBranch?.name ?? 'another branch'}. That branch manager must release them before they can work here.`)
   }
-  const before = { ...target, branchIds: [...target.branchIds], managedBranchIds: [...target.managedBranchIds] }
+  const before = { ...target, branchIds: [...target.branchIds], managedBranchIds: [...target.managedBranchIds], branchAccessExpiresAt: { ...(target.branchAccessExpiresAt ?? {}) } }
+  target.branchAccessExpiresAt = { ...(target.branchAccessExpiresAt ?? {}) }
   target.branchIds = canAccess ? [branchId] : target.branchIds.filter((id) => id !== branchId)
+  if (canAccess && expiresAt) {
+    target.branchAccessExpiresAt[branchId] = expiresAt
+  } else {
+    delete target.branchAccessExpiresAt[branchId]
+  }
+  if (canAccess) {
+    db.branchAccessRequests = db.branchAccessRequests.map((request) => (
+      request.userId === userId && request.branchId === branchId && request.status === 'pending'
+        ? { ...request, status: 'approved', updatedAt: nowIso(), resolvedAt: nowIso(), resolvedBy: actorId }
+        : request
+    ))
+  }
   addAudit(db, actorId, canAccess ? 'Granted branch access' : 'Removed branch access', 'user', userId, before, { ...target })
+}
+
+function requestBranchAccess(db: Database, actorId: string, payload: Record<string, unknown> | undefined) {
+  const actor = db.users.find((user) => user.id === actorId)
+  if (!actor) throw new Error('Authentication required')
+  if (actor.status !== 'active') throw new Error('Only active users can request branch access')
+  if (actor.id === getPrimaryAdminId(db)) throw new Error('The permanent admin already has access to every branch')
+  const branchId = requireString(payload?.branchId, 'Branch')
+  if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
+  if (hasActiveBranchAssignment(actor, branchId)) throw new Error('You already have access to this branch')
+  const existing = db.branchAccessRequests.find((request) => request.userId === actorId && request.branchId === branchId && request.status === 'pending')
+  if (existing) return
+  const request = {
+    id: id('bar'),
+    userId: actorId,
+    branchId,
+    status: 'pending' as const,
+    requestedAt: nowIso(),
+    updatedAt: nowIso(),
+  }
+  db.branchAccessRequests.unshift(request)
+  addAudit(db, actorId, 'Requested branch access', 'branch-access-request', request.id, undefined, request)
 }
 
 function upsertMedicine(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
@@ -287,6 +328,7 @@ function upsertBranch(db: Database, actorId: string, actorRole: Role, payload: R
   const managerUserId = optionalString(input.managerUserId)
   if (managerUserId && !canAdmin({ ...actor, role: actorRole }, primaryAdminId)) throw new Error('Only the permanent admin can assign branch managers')
   if (managerUserId) {
+    if (managerUserId === primaryAdminId) throw new Error('The permanent admin remains global and should not be assigned as a branch manager')
     const manager = db.users.find((user) => user.id === managerUserId && user.status === 'active')
     if (!manager) throw new Error('Manager user not found')
     if (manager.role === 'viewer') throw new Error('Viewers cannot be branch managers')
@@ -311,13 +353,26 @@ function upsertBranch(db: Database, actorId: string, actorRole: Role, payload: R
     const previousManager = db.users.find((user) => user.id === before.managerUserId)
     if (previousManager && previousManager.id !== primaryAdminId) {
       previousManager.managedBranchIds = previousManager.managedBranchIds.filter((id) => id !== record.id)
+      previousManager.branchIds = previousManager.branchIds.filter((id) => id !== record.id)
+      delete previousManager.branchAccessExpiresAt?.[record.id]
     }
   }
   if (record.managerUserId) {
     const manager = db.users.find((user) => user.id === record.managerUserId)
     if (manager) {
-      manager.branchIds = Array.from(new Set([...manager.branchIds, record.id]))
-      manager.managedBranchIds = Array.from(new Set([...manager.managedBranchIds, record.id]))
+      db.branches = db.branches.map((branch) => (
+        branch.id !== record.id && branch.managerUserId === manager.id
+          ? { ...branch, managerUserId: '', managerName: '' }
+          : branch
+      ))
+      manager.branchIds = [record.id]
+      manager.managedBranchIds = [record.id]
+      manager.branchAccessExpiresAt = {}
+      db.branchAccessRequests = db.branchAccessRequests.map((request) => (
+        request.userId === manager.id && request.branchId === record.id && request.status === 'pending'
+          ? { ...request, status: 'approved', updatedAt: nowIso(), resolvedAt: nowIso(), resolvedBy: actorId }
+          : request
+      ))
     }
   }
   addAudit(db, actorId, before ? 'Updated branch' : 'Created branch', 'branch', record.id, before, record)

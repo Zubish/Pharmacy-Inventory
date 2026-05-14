@@ -86,6 +86,7 @@ type User = {
   status: UserStatus
   branchIds: string[]
   managedBranchIds: string[]
+  branchAccessExpiresAt?: Record<string, string>
   lastChatSeenAt?: string
   knownDevices?: Array<{
     id: string
@@ -252,6 +253,19 @@ type Requisition = {
   note?: string
 }
 
+type BranchAccessRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
+
+type BranchAccessRequest = {
+  id: string
+  userId: string
+  branchId: string
+  status: BranchAccessRequestStatus
+  requestedAt: string
+  updatedAt: string
+  resolvedBy?: string
+  resolvedAt?: string
+}
+
 type AppSettings = {
   softwareName: string
   accountName: string
@@ -275,6 +289,7 @@ type Database = {
   passwordResetRequests: PasswordResetRequest[]
   securityEvents: SecurityEvent[]
   requisitions: Requisition[]
+  branchAccessRequests: BranchAccessRequest[]
   settings: AppSettings
 }
 
@@ -300,6 +315,7 @@ type AppNotification = {
   view: View
   branchId?: string
   audience?: 'branch' | 'super-admin'
+  requiredPermission?: 'manage-branch'
   createdAt?: string
 }
 
@@ -422,6 +438,7 @@ function createEmptyDatabase(): Database {
     passwordResetRequests: [],
     securityEvents: [],
     requisitions: [],
+    branchAccessRequests: [],
     settings: {
       softwareName: 'RxLedger',
       accountName: 'Pharmacy Account',
@@ -481,23 +498,36 @@ function isSuperAdmin(db: Database, user: User | null | undefined) {
   return Boolean(user && user.role === 'admin' && user.id === getPrimaryAdminId(db))
 }
 
+function getBranchAccessExpiry(user: User, branchId: string) {
+  return user.branchAccessExpiresAt?.[branchId] || ''
+}
+
+function hasActiveBranchAssignment(user: User, branchId: string) {
+  const assigned = user.branchIds.includes(branchId) || user.managedBranchIds.includes(branchId)
+  if (!assigned) return false
+  const expiresAt = getBranchAccessExpiry(user, branchId)
+  return !expiresAt || expiresAt >= today()
+}
+
 function canManageBranch(db: Database, user: User, branchId: string) {
-  return isSuperAdmin(db, user) || user.managedBranchIds.includes(branchId)
+  return isSuperAdmin(db, user) || (user.managedBranchIds.includes(branchId) && hasActiveBranchAssignment(user, branchId))
 }
 
 function canWriteBranch(db: Database, user: User, branchId: string) {
-  return isSuperAdmin(db, user) || (user.role !== 'viewer' && (user.branchIds.includes(branchId) || user.managedBranchIds.includes(branchId)))
+  return isSuperAdmin(db, user) || (user.role !== 'viewer' && hasActiveBranchAssignment(user, branchId))
 }
 
 function canViewBranch(db: Database, user: User, branchId: string) {
-  return isSuperAdmin(db, user) || user.branchIds.includes(branchId) || user.managedBranchIds.includes(branchId)
+  return isSuperAdmin(db, user) || hasActiveBranchAssignment(user, branchId)
 }
 
 function getUserHomeBranch(db: Database, user: User | null | undefined) {
   const activeBranches = getActiveBranches(db)
   if (!user) return activeBranches[0] ?? db.branches[0]
   if (isSuperAdmin(db, user)) return undefined
-  const homeId = user.managedBranchIds[0] || user.branchIds[0] || activeBranches.find((branch) => branch.managerUserId === user.id)?.id
+  const activeManagedBranchIds = user.managedBranchIds.filter((branchId) => hasActiveBranchAssignment(user, branchId))
+  const activeBranchIds = user.branchIds.filter((branchId) => hasActiveBranchAssignment(user, branchId))
+  const homeId = activeManagedBranchIds[0] || activeBranchIds[0]
   return activeBranches.find((branch) => branch.id === homeId) ?? activeBranches[0] ?? db.branches[0]
 }
 
@@ -512,19 +542,19 @@ function prioritizeAssignedBranch(branches: Branch[], assignedBranchId?: string)
 
 function getUserBranchStatus(db: Database, user: User, branchId: string) {
   if (isSuperAdmin(db, user)) return 'Super admin'
-  if (user.managedBranchIds.includes(branchId)) return 'Manager'
-  if (user.branchIds.includes(branchId)) return 'Assigned'
+  if (user.managedBranchIds.includes(branchId) && hasActiveBranchAssignment(user, branchId)) return 'Manager'
+  if (user.branchIds.includes(branchId) && hasActiveBranchAssignment(user, branchId)) return 'Assigned'
   return 'View only'
 }
 
 function getUserHomeRoleLabel(db: Database, user: User, branchId?: string) {
   if (isSuperAdmin(db, user)) return 'Super admin'
-  if (branchId && user.managedBranchIds.includes(branchId)) return 'Manager'
+  if (branchId && user.managedBranchIds.includes(branchId) && hasActiveBranchAssignment(user, branchId)) return 'Manager'
   return roleLabels[user.role]
 }
 
 function getOtherAssignedBranch(db: Database, user: User, branchId: string) {
-  const otherId = [...user.managedBranchIds, ...user.branchIds].find((id) => id !== branchId)
+  const otherId = [...user.managedBranchIds, ...user.branchIds].find((id) => id !== branchId && hasActiveBranchAssignment(user, id))
   return otherId ? db.branches.find((branch) => branch.id === otherId) : undefined
 }
 
@@ -559,6 +589,7 @@ function exportCsv(filename: string, rows: ReportRow[]) {
 function isNotificationVisible(db: Database, currentUser: User, notification: AppNotification, activeBranch?: Branch) {
   if (notification.audience === 'super-admin') return isSuperAdmin(db, currentUser)
   if (!notification.branchId) return true
+  if (notification.requiredPermission === 'manage-branch' && !canManageBranch(db, currentUser, notification.branchId)) return false
   return activeBranch ? notification.branchId === activeBranch.id : true
 }
 
@@ -575,6 +606,7 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
   ))
   const incomingRequisitions = relevantRequisitions.filter((request) => request.status === 'pending')
   const handledRequisitions = relevantRequisitions.filter((request) => request.requesterUserId === currentUser.id && request.status !== 'pending')
+  const branchAccessRequests = db.branchAccessRequests.filter((request) => request.status === 'pending' && canViewBranch(db, currentUser, request.branchId))
   const scopedMedicineIds = new Set(stockRows.map((row) => row.medicine.id))
   const expired = stockRows.filter((row) => row.quantity > 0 && row.status === 'expired')
   const nearExpiry = stockRows.filter((row) => row.quantity > 0 && row.status === 'near-expiry')
@@ -620,6 +652,20 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
       view: 'medicines',
       branchId: activeBranch?.id === request.requestingBranchId ? request.requestingBranchId : request.sourceBranchId,
       createdAt: request.createdAt,
+    })
+  })
+
+  branchAccessRequests.forEach((request) => {
+    const user = db.users.find((item) => item.id === request.userId)
+    notifications.push({
+      id: `branch-access-${request.id}`,
+      tone: 'info',
+      title: `${user?.name ?? 'Staff member'} requested branch access`,
+      detail: `${getBranchName(db, request.branchId)} access can be granted when the staff member is free.`,
+      view: 'branches',
+      branchId: request.branchId,
+      requiredPermission: 'manage-branch',
+      createdAt: request.requestedAt,
     })
   })
 
@@ -2895,7 +2941,10 @@ function UserManagement({ db, currentUser, executeAction, flash }: { db: Databas
                     </select>
                   </td>
                   <td>
-                    <span>{isSuperAdmin(db, user) ? 'All branches' : db.branches.filter((branch) => user.branchIds.includes(branch.id) || user.managedBranchIds.includes(branch.id)).map((branch) => branch.name).join(', ') || 'View only everywhere'}</span>
+                    <span>{isSuperAdmin(db, user) ? 'All branches' : db.branches.filter((branch) => hasActiveBranchAssignment(user, branch.id)).map((branch) => {
+                      const expiresAt = getBranchAccessExpiry(user, branch.id)
+                      return `${branch.name}${expiresAt ? ` until ${expiresAt}` : ''}`
+                    }).join(', ') || 'View only everywhere'}</span>
                   </td>
                   <td><span className={`pill ${user.status}`}>{statusLabels[user.status]}</span></td>
                   <td>{new Date(user.createdAt).toLocaleDateString()}</td>
@@ -2975,10 +3024,16 @@ function BranchesView({
   })
   const [form, setForm] = useState<Branch>(createBlank)
   const selectedBranch = db.branches.find((branch) => branch.id === activeBranchId) ?? db.branches[0]
+  const primaryAdminId = getPrimaryAdminId(db)
   const superAdmin = isSuperAdmin(db, currentUser)
   const canManageSelected = selectedBranch ? canManageBranch(db, currentUser, selectedBranch.id) : false
-  const assignableUsers = db.users.filter((user) => user.status === 'active' && user.id !== getPrimaryAdminId(db))
-  const managerOptions = db.users.filter((user) => user.status === 'active' && user.role !== 'viewer')
+  const assignableUsers = useMemo(() => db.users.filter((user) => user.status === 'active' && user.id !== primaryAdminId), [db.users, primaryAdminId])
+  const managerOptions = useMemo(() => db.users.filter((user) => user.status === 'active' && user.role !== 'viewer' && user.id !== primaryAdminId), [db.users, primaryAdminId])
+  const [accessExpiryByUser, setAccessExpiryByUser] = useState<Record<string, string>>({})
+  const currentUserHasSelectedAccess = selectedBranch ? hasActiveBranchAssignment(currentUser, selectedBranch.id) : false
+  const currentUserPendingAccessRequest = selectedBranch
+    ? db.branchAccessRequests.find((request) => request.userId === currentUser.id && request.branchId === selectedBranch.id && request.status === 'pending')
+    : undefined
 
   function edit(branch: Branch) {
     setForm(branch)
@@ -3006,11 +3061,19 @@ function BranchesView({
 
   function updateBranchAccess(user: User, canAccess: boolean) {
     if (!selectedBranch) return
+    const draftKey = `${selectedBranch.id}:${user.id}`
+    const expiresAt = accessExpiryByUser[draftKey] ?? getBranchAccessExpiry(user, selectedBranch.id)
     void executeAction('updateBranchAccess', {
       userId: user.id,
       branchId: selectedBranch.id,
       canAccess,
+      expiresAt: canAccess ? expiresAt : '',
     }, 'Branch access updated')
+  }
+
+  function requestBranchAccess() {
+    if (!selectedBranch) return
+    void executeAction('requestBranchAccess', { branchId: selectedBranch.id }, 'Branch access request sent')
   }
 
   return (
@@ -3073,27 +3136,50 @@ function BranchesView({
             <div className="section-heading">
               <div>
                 <h2>{selectedBranch.name} Staff Access</h2>
-                <p>Users can work in one assigned branch at a time. Their current branch manager must release them before another manager can assign them.</p>
+                <p>Super admin can assign managers and override transfers. Branch managers can grant access to free staff for their own branch.</p>
               </div>
               <span className={canManageSelected ? 'pill active' : 'pill muted'}>{canManageSelected ? 'Can authorize' : 'View only'}</span>
             </div>
+            {!canManageSelected && !currentUserHasSelectedAccess && currentUser.id !== primaryAdminId && (
+              <div className="access-request-box">
+                <div>
+                  <strong>Need to work in this branch?</strong>
+                  <span>Request access from the branch manager.</span>
+                </div>
+                <button className="ghost-button" type="button" onClick={requestBranchAccess} disabled={Boolean(currentUserPendingAccessRequest)}>
+                  <Send size={16} />
+                  {currentUserPendingAccessRequest ? 'Request sent' : 'Request access'}
+                </button>
+              </div>
+            )}
             <div className="access-list">
               {assignableUsers.map((user) => {
-                const hasAccess = user.branchIds.includes(selectedBranch.id) || user.managedBranchIds.includes(selectedBranch.id)
-                const isManager = user.managedBranchIds.includes(selectedBranch.id)
+                const hasAccess = hasActiveBranchAssignment(user, selectedBranch.id)
+                const isManager = user.managedBranchIds.includes(selectedBranch.id) && hasActiveBranchAssignment(user, selectedBranch.id)
                 const otherAssignedBranch = getOtherAssignedBranch(db, user, selectedBranch.id)
                 const waitingForRelease = Boolean(otherAssignedBranch && !hasAccess && !superAdmin)
                 return (
-                  <label className="access-row" key={user.id}>
+                  <article className="access-row" key={user.id}>
                     <input type="checkbox" checked={hasAccess} onChange={(event) => updateBranchAccess(user, event.target.checked)} disabled={!canManageSelected || isManager || waitingForRelease} />
                     <span>
                       <strong>{user.name}</strong>
                       {user.email}
-                      {waitingForRelease && <small>Assigned to {otherAssignedBranch?.name}. That branch manager must release this user first.</small>}
-                      {otherAssignedBranch && superAdmin && !hasAccess && <small>Assigned to {otherAssignedBranch.name}. Super admin can override this transfer.</small>}
                     </span>
-                    <b className={isManager ? 'pill active' : hasAccess ? 'pill good' : waitingForRelease ? 'pill warning' : 'pill muted'}>{isManager ? 'Manager' : hasAccess ? roleLabels[user.role] : waitingForRelease ? 'Needs release' : 'View only'}</b>
-                  </label>
+                    <div className="access-row-controls">
+                      <b className={isManager ? 'pill active' : hasAccess ? 'pill good' : 'pill muted'}>{isManager ? 'Manager' : hasAccess ? roleLabels[user.role] : 'View only'}</b>
+                      {canManageSelected && !isManager && (
+                        <label className="access-expiry">
+                          Until
+                          <input type="date" value={accessExpiryByUser[`${selectedBranch.id}:${user.id}`] ?? getBranchAccessExpiry(user, selectedBranch.id)} onChange={(event) => setAccessExpiryByUser((current) => ({ ...current, [`${selectedBranch.id}:${user.id}`]: event.target.value }))} disabled={waitingForRelease} />
+                        </label>
+                      )}
+                      {canManageSelected && hasAccess && !isManager && (
+                        <button className="icon-button" type="button" onClick={() => updateBranchAccess(user, true)} title="Save access timeframe">
+                          <CheckCircle2 size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </article>
                 )
               })}
             </div>
