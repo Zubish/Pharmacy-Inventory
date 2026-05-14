@@ -345,7 +345,7 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
     active: branch.active !== false,
   }))
   const users = (raw.users ?? empty.users).map((user) => {
-    const isPrimaryAdmin = user.id === primaryAdminId || user.role === 'admin'
+    const isPrimaryAdmin = user.id === primaryAdminId
     const branchIds = user.branchIds?.length ? user.branchIds : isPrimaryAdmin ? branches.map((branch) => branch.id) : []
     const managedBranchIds = user.managedBranchIds?.length ? user.managedBranchIds : isPrimaryAdmin ? branches.map((branch) => branch.id) : []
     return {
@@ -548,16 +548,16 @@ export function canAdjust(user: User) {
   return user.role === 'admin' || user.role === 'pharmacist'
 }
 
-export function canAdmin(user: User) {
-  return user.role === 'admin'
+export function canAdmin(user: User, primaryAdminId = '') {
+  return user.role === 'admin' && (!primaryAdminId || user.id === primaryAdminId)
 }
 
-export function canManageBranch(user: User, branchId: string) {
-  return canAdmin(user) || user.managedBranchIds.includes(branchId)
+export function canManageBranch(user: User, branchId: string, primaryAdminId = '') {
+  return canAdmin(user, primaryAdminId) || user.managedBranchIds.includes(branchId)
 }
 
-export function canWriteBranch(user: User, branchId: string) {
-  return canAdmin(user) || (canWrite(user) && (user.branchIds.includes(branchId) || user.managedBranchIds.includes(branchId)))
+export function canWriteBranch(user: User, branchId: string, primaryAdminId = '') {
+  return canAdmin(user, primaryAdminId) || (canWrite(user) && (user.branchIds.includes(branchId) || user.managedBranchIds.includes(branchId)))
 }
 
 export function fail(res: HandlerResponse, status: number, message: string) {

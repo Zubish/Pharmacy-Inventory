@@ -118,14 +118,18 @@ function requireNumber(value: unknown, label: string) {
   return parsed
 }
 
+function getPrimaryAdminId(db: Database) {
+  return db.settings.primaryAdminId || db.users.find((user) => user.role === 'admin' && user.status === 'active')?.id || ''
+}
+
 function updateUser(db: Database, actorId: string, payload: Record<string, unknown> | undefined) {
   const actor = db.users.find((user) => user.id === actorId)
-  if (!actor || !canAdmin(actor)) throw new Error('Only admins can update users')
+  const primaryAdminId = getPrimaryAdminId(db)
+  if (!actor || !canAdmin(actor, primaryAdminId)) throw new Error('Only the permanent admin can update users')
   const userId = requireString(payload?.userId, 'User')
   const target = db.users.find((user) => user.id === userId)
   if (!target) throw new Error('User not found')
   const updates = (payload?.updates ?? {}) as Partial<{ role: Role; status: 'pending' | 'active' | 'suspended' }>
-  const primaryAdminId = db.settings.primaryAdminId || db.users.find((user) => user.role === 'admin' && user.status === 'active')?.id
   if (target.id === primaryAdminId && ((updates.status && updates.status !== 'active') || (updates.role && updates.role !== 'admin'))) {
     throw new Error('The permanent account admin cannot be downgraded or suspended')
   }
@@ -176,14 +180,15 @@ async function triggerSecurityPanic(req: HandlerRequest, db: Database, actorId: 
 function updateBranchAccess(db: Database, actorId: string, payload: Record<string, unknown> | undefined) {
   const actor = db.users.find((user) => user.id === actorId)
   const branchId = requireString(payload?.branchId, 'Branch')
-  if (!actor || !canManageBranch(actor, branchId)) throw new Error('Only this branch manager or an admin can update branch access')
+  const primaryAdminId = getPrimaryAdminId(db)
+  if (!actor || !canManageBranch(actor, branchId, primaryAdminId)) throw new Error('Only this branch manager or the permanent admin can update branch access')
   const branch = db.branches.find((item) => item.id === branchId)
   if (!branch) throw new Error('Branch not found')
   const userId = requireString(payload?.userId, 'User')
   const target = db.users.find((user) => user.id === userId)
   if (!target) throw new Error('User not found')
   if (target.status !== 'active') throw new Error('Only active users can be assigned to branches')
-  if (target.role === 'admin') throw new Error('Admins already have access to every branch')
+  if (target.id === primaryAdminId) throw new Error('The permanent admin already has access to every branch')
   if (target.managedBranchIds.includes(branchId)) throw new Error('Branch managers cannot be removed from their managed branch here')
   const canAccess = Boolean(payload?.canAccess)
   const before = { ...target, branchIds: [...target.branchIds], managedBranchIds: [...target.managedBranchIds] }
@@ -268,11 +273,12 @@ function upsertBranch(db: Database, actorId: string, actorRole: Role, payload: R
   const actor = db.users.find((user) => user.id === actorId)
   const input = (payload?.record ?? {}) as Partial<Branch>
   if (!actor) throw new Error('Authentication required')
-  if (!input.id && !canAdmin({ ...actor, role: actorRole })) throw new Error('Only admins can create branches')
-  if (input.id && !canManageBranch(actor, input.id)) throw new Error('Only this branch manager or an admin can save this branch')
+  const primaryAdminId = getPrimaryAdminId(db)
+  if (!input.id && !canAdmin({ ...actor, role: actorRole }, primaryAdminId)) throw new Error('Only the permanent admin can create branches')
+  if (input.id && !canManageBranch(actor, input.id, primaryAdminId)) throw new Error('Only this branch manager or the permanent admin can save this branch')
   const name = requireString(input.name, 'Branch name')
   const managerUserId = optionalString(input.managerUserId)
-  if (managerUserId && !canAdmin({ ...actor, role: actorRole })) throw new Error('Only admins can assign branch managers')
+  if (managerUserId && !canAdmin({ ...actor, role: actorRole }, primaryAdminId)) throw new Error('Only the permanent admin can assign branch managers')
   if (managerUserId) {
     const manager = db.users.find((user) => user.id === managerUserId && user.status === 'active')
     if (!manager) throw new Error('Manager user not found')
@@ -296,7 +302,7 @@ function upsertBranch(db: Database, actorId: string, actorRole: Role, payload: R
   if (record.id === 'main') db.settings.branchName = record.name
   if (before?.managerUserId && before.managerUserId !== record.managerUserId) {
     const previousManager = db.users.find((user) => user.id === before.managerUserId)
-    if (previousManager && previousManager.role !== 'admin') {
+    if (previousManager && previousManager.id !== primaryAdminId) {
       previousManager.managedBranchIds = previousManager.managedBranchIds.filter((id) => id !== record.id)
     }
   }
@@ -317,7 +323,7 @@ function receiveStock(db: Database, actorId: string, actorRole: Role, payload: R
   if (!db.suppliers.some((supplier) => supplier.id === supplierId)) throw new Error('Supplier not found')
   const branchId = optionalString(payload?.branchId) || db.branches.find((branch) => branch.active)?.id || 'main'
   if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
-  if (!canWriteBranch(actor, branchId)) throw new Error('You only have view access in this branch')
+  if (!canWriteBranch(actor, branchId, getPrimaryAdminId(db))) throw new Error('You only have view access in this branch')
   const inputs = Array.isArray(payload?.items)
     ? (payload.items as Record<string, unknown>[])
     : [{
@@ -391,7 +397,7 @@ function getBatchAvailable(db: Database, batchId: string) {
 function getUserRequestingBranches(db: Database, actorId: string) {
   const actor = db.users.find((user) => user.id === actorId)
   if (!actor) return []
-  if (canAdmin(actor)) return db.branches.filter((branch) => branch.active)
+  if (canAdmin(actor, getPrimaryAdminId(db))) return db.branches.filter((branch) => branch.active)
   const branchIds = Array.from(new Set([...actor.branchIds, ...actor.managedBranchIds]))
   return db.branches.filter((branch) => branch.active && branchIds.includes(branch.id))
 }
@@ -446,7 +452,7 @@ function fulfillRequisition(db: Database, actorId: string, payload: Record<strin
   const requestId = requireString(payload?.requestId, 'Requisition')
   const request = db.requisitions.find((item) => item.id === requestId)
   if (!request || request.status !== 'pending') throw new Error('Pending requisition not found')
-  if (!canWriteBranch(actor, request.sourceBranchId)) throw new Error('You need branch posting access to fulfill this request')
+  if (!canWriteBranch(actor, request.sourceBranchId, getPrimaryAdminId(db))) throw new Error('You need branch posting access to fulfill this request')
   const before = { ...request, items: request.items.map((item) => ({ ...item })) }
   const transferEntries = []
   const transferBatches = []
@@ -505,7 +511,7 @@ function rejectRequisition(db: Database, actorId: string, payload: Record<string
   const requestId = requireString(payload?.requestId, 'Requisition')
   const request = db.requisitions.find((item) => item.id === requestId)
   if (!request || request.status !== 'pending') throw new Error('Pending requisition not found')
-  if (!canWriteBranch(actor, request.sourceBranchId)) throw new Error('You need branch posting access to reject this request')
+  if (!canWriteBranch(actor, request.sourceBranchId, getPrimaryAdminId(db))) throw new Error('You need branch posting access to reject this request')
   const before = { ...request }
   request.status = 'rejected'
   request.handledBy = actorId
@@ -521,7 +527,7 @@ function issueStock(db: Database, actorId: string, actorRole: Role, payload: Rec
   const medicineId = requireString(payload?.medicineId, 'Medicine')
   const branchId = optionalString(payload?.branchId) || db.branches.find((branch) => branch.active)?.id || 'main'
   if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
-  if (!canWriteBranch(actor, branchId)) throw new Error('You only have view access in this branch')
+  if (!canWriteBranch(actor, branchId, getPrimaryAdminId(db))) throw new Error('You only have view access in this branch')
   const quantity = requireNumber(payload?.quantity, 'Quantity')
   if (quantity <= 0) throw new Error('Quantity must be greater than zero')
   const rows = db.batches
@@ -563,7 +569,7 @@ function adjustStock(db: Database, actorId: string, actorRole: Role, payload: Re
   const batchId = requireString(payload?.batchId, 'Batch')
   const batch = db.batches.find((item) => item.id === batchId)
   if (!batch) throw new Error('Batch not found')
-  if (!canWriteBranch(actor, batch.branchId)) throw new Error('You only have view access in this branch')
+  if (!canWriteBranch(actor, batch.branchId, getPrimaryAdminId(db))) throw new Error('You only have view access in this branch')
   const mode = requireString(payload?.mode, 'Transaction type') as LedgerType
   const quantity = requireNumber(payload?.quantity, 'Quantity')
   const current = db.ledger.filter((entry) => entry.batchId === batchId).reduce((sum, entry) => sum + entry.quantity, 0)
@@ -586,7 +592,7 @@ function adjustStock(db: Database, actorId: string, actorRole: Role, payload: Re
 
 function updateSettings(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
   const actor = db.users.find((user) => user.id === actorId)
-  if (!actor || !canAdmin({ ...actor, role: actorRole })) throw new Error('Only admins can update settings')
+  if (!actor || !canAdmin({ ...actor, role: actorRole }, getPrimaryAdminId(db))) throw new Error('Only the permanent admin can update settings')
   const before = { ...db.settings }
   db.settings = {
     pharmacyName: optionalString(payload?.pharmacyName) || db.settings.pharmacyName,
