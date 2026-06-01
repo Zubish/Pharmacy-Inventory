@@ -675,6 +675,8 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
   const rawSettings = (raw.settings ?? {}) as Partial<Database['settings']>
   const accountName = rawSettings.accountName || rawSettings.pharmacyName || empty.settings.accountName
   const branchName = rawSettings.branchName || empty.settings.branchName
+  const companySlug = normalizeCompanySlug(rawSettings.companySlug || accountName) || TOTALENERGIES_COMPANY_SLUG
+  const isTotalenergiesFile = companySlug === TOTALENERGIES_COMPANY_SLUG || accountName.toLowerCase().includes('totalenergies')
   const primaryAdminId = rawSettings.primaryAdminId || raw.users?.find((user) => user.role === 'admin' && user.status === 'active')?.id
   const branches = (raw.branches?.length ? raw.branches : [{
     ...empty.branches[0],
@@ -826,19 +828,19 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
     settings: {
       ...empty.settings,
       ...rawSettings,
-      softwareName: rawSettings.softwareName || 'Totalenergies Pharmacy Inventory',
+      softwareName: isTotalenergiesFile ? 'Totalenergies Pharmacy Inventory' : rawSettings.softwareName || 'Totalenergies Pharmacy Inventory',
       accountName,
       pharmacyName: rawSettings.pharmacyName || accountName,
       branchName,
-      companySlug: normalizeCompanySlug(rawSettings.companySlug || accountName) || TOTALENERGIES_COMPANY_SLUG,
+      companySlug,
       companyCode: rawSettings.companyCode || 'TOTAL-RX',
       businessLicense: rawSettings.businessLicense || '',
       mainBranchAddress: rawSettings.mainBranchAddress || '',
       logoDataUrl: rawSettings.logoDataUrl || '',
       primaryAdminId,
-      subscriptionPlanId: rawSettings.subscriptionPlanId === 'single-branch' || rawSettings.subscriptionPlanId === 'enterprise' ? rawSettings.subscriptionPlanId : 'smart-pharmacy',
-      trialStartedAt: rawSettings.trialStartedAt || empty.settings.trialStartedAt,
-      trialEndsAt: rawSettings.trialEndsAt || empty.settings.trialEndsAt,
+      subscriptionPlanId: isTotalenergiesFile ? 'enterprise' : rawSettings.subscriptionPlanId === 'single-branch' || rawSettings.subscriptionPlanId === 'enterprise' ? rawSettings.subscriptionPlanId : 'smart-pharmacy',
+      trialStartedAt: isTotalenergiesFile ? undefined : rawSettings.trialStartedAt || empty.settings.trialStartedAt,
+      trialEndsAt: isTotalenergiesFile ? undefined : rawSettings.trialEndsAt || empty.settings.trialEndsAt,
     },
   }
 }
