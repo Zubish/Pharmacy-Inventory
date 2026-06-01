@@ -10,7 +10,6 @@ import {
   BookOpen,
   Boxes,
   Building2,
-  Calculator,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
@@ -61,28 +60,24 @@ import {
 import {
   bootstrap,
   clearStoredToken,
-  checkCompanySlug,
   getStoredToken,
-  getStoredCompanySlug,
   loadState,
   login as apiLogin,
   logout as apiLogout,
   completePasswordReset as apiCompletePasswordReset,
   registerUser as apiRegisterUser,
   requestPasswordReset as apiRequestPasswordReset,
-  resolveCompany,
   runAction,
   setupWorkspace,
-  storeCompanySlug,
+  TOTALENERGIES_COMPANY_SLUG,
 } from './api'
-import RxLedgerLanding from './RxLedgerLanding'
-import { planById, planChangeBlockers, subscriptionPlans, trialPolicy, type SubscriptionPlanId } from './subscriptionPlans'
 import './App.css'
 
 const SIDEBAR_WIDTH = 280
 
 type Role = 'admin' | 'pharmacist' | 'inventory' | 'cashier' | 'viewer'
 type UserStatus = 'pending' | 'active' | 'suspended'
+type SubscriptionPlanId = 'single-branch' | 'smart-pharmacy' | 'enterprise'
 type View =
   | 'dashboard'
   | 'medicines'
@@ -477,10 +472,9 @@ type AppNotification = {
 const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard; adminOnly?: boolean }> = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'medicines', label: 'Pharmacy', icon: Pill },
-  { id: 'products', label: 'Mart', icon: Boxes },
   { id: 'suppliers', label: 'Suppliers', icon: Truck },
   { id: 'receive', label: 'Receive', icon: PackagePlus },
-  { id: 'pos', label: 'POS', icon: Calculator },
+  { id: 'pos', label: 'Prescriptions', icon: ClipboardList },
   { id: 'patients', label: 'Patients', icon: User2 },
   { id: 'issue', label: 'Issue Stock', icon: PackageMinus },
   { id: 'adjust', label: 'Adjust/Returns', icon: RotateCcw },
@@ -522,12 +516,12 @@ const movementLabels: Record<LedgerType, string> = {
   adjustment: 'Adjustment',
   'write-off': 'Write-off',
   'supplier-return': 'Supplier Return',
-  'customer-return': 'Customer Return',
+  'customer-return': 'Staff/patient Return',
 }
 
 const movementFilterOptions = [
   ...Object.entries(movementLabels).map(([value, label]) => ({ value, label })),
-  { value: 'pos', label: 'POS' },
+  { value: 'pos', label: 'Dispensing' },
   { value: 'internal-transfer', label: 'Internal Transfer' },
 ]
 const pricingRoundingRules: PricingRoundingRule[] = [0, 1, 5, 10, 50, 100]
@@ -539,23 +533,6 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000
 
 function id(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
-}
-
-function slugifyCompany(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48)
-}
-
-function getWorkspaceSlugFromLocation() {
-  if (typeof window === 'undefined') return ''
-  const [segment = ''] = window.location.pathname.split('/').filter(Boolean)
-  if (!segment || segment === 'api') return ''
-  return slugifyCompany(segment)
 }
 
 function daysUntil(date: string) {
@@ -583,7 +560,7 @@ function numberInputValue(value: unknown) {
 }
 
 function safeStorageKey(db: Database, currentUser: User, suffix: string) {
-  return `rxledger:${db.settings.companySlug || db.settings.companyCode || 'workspace'}:${currentUser.id}:${suffix}`
+  return `totalenergies:${db.settings.companySlug || db.settings.companyCode || 'file'}:${currentUser.id}:${suffix}`
 }
 
 function getStoredNumber(key: string, fallback = 0) {
@@ -779,8 +756,8 @@ function createEmptyDatabase(): Database {
     suppliers: [],
     branches: [{
       id: 'main',
-      name: 'Main Branch',
-      code: 'MAIN',
+      name: 'Totalenergies Clinic',
+      code: 'TOTAL-RX',
       address: '',
       managerName: '',
       managerUserId: '',
@@ -800,12 +777,12 @@ function createEmptyDatabase(): Database {
     requisitions: [],
     branchAccessRequests: [],
     settings: {
-      softwareName: 'RxLedger',
-      accountName: 'Pharmacy Account',
-      pharmacyName: 'RxLedger',
-      branchName: 'Main Branch',
-      companySlug: '',
-      companyCode: '',
+      softwareName: 'Totalenergies Pharmacy Inventory',
+      accountName: 'Totalenergies Clinic Pharmacy',
+      pharmacyName: 'Totalenergies Clinic Pharmacy',
+      branchName: 'Totalenergies Clinic',
+      companySlug: TOTALENERGIES_COMPANY_SLUG,
+      companyCode: 'TOTAL-RX',
       businessLicense: '',
       mainBranchAddress: '',
       logoDataUrl: '',
@@ -820,9 +797,7 @@ function createEmptyDatabase(): Database {
       managerDiscountLimitPercent: 10,
       unusualMarkupPercent: 80,
       costChangeWarningPercent: 30,
-      subscriptionPlanId: trialPolicy.includedPlan,
-      trialStartedAt: new Date().toISOString(),
-      trialEndsAt: new Date(Date.now() + trialPolicy.durationDays * 24 * 60 * 60 * 1000).toISOString(),
+      subscriptionPlanId: 'enterprise',
     },
   }
 }
@@ -959,7 +934,7 @@ function medicineFollowUpInstruction(medicine: Medicine) {
   return medicineCounselingRule(medicine)?.followUp || `Take ${medicine.brandName} exactly as prescribed and contact the pharmacy if you notice unusual side effects.`
 }
 
-function buildPurchaseFollowUpMessage(db: Database, items: Array<{ itemType: 'medicine' | 'product'; itemId: string }>) {
+function buildDispensingFollowUpMessage(db: Database, items: Array<{ itemType: 'medicine' | 'product'; itemId: string }>) {
   const medicineMessages = items
     .filter((item) => item.itemType === 'medicine')
     .map((item) => db.medicines.find((medicine) => medicine.id === item.itemId))
@@ -1153,7 +1128,7 @@ function findMedicineByScan(db: Database, scan: string) {
   )
 }
 
-function findReceivableItem(db: Database, query: string): { itemType: 'medicine' | 'product'; itemId: string; label: string } | undefined {
+function findReceivableItem(db: Database, query: string): { itemType: 'medicine'; itemId: string; label: string } | undefined {
   const needle = query.trim().toLowerCase()
   if (!needle) return undefined
   const medicineMatches = db.medicines
@@ -1165,16 +1140,7 @@ function findReceivableItem(db: Database, query: string): { itemType: 'medicine'
       exact: [medicine.sku, medicine.nafdacNumber, ...medicine.barcodes].some((value) => value.toLowerCase() === needle),
       text: `${medicine.sku} ${medicine.nafdacNumber} ${medicine.brandName} ${medicine.genericName} ${medicine.form} ${medicine.strength} ${medicine.category} ${medicine.barcodes.join(' ')}`.toLowerCase(),
     }))
-  const productMatches = db.products
-    .filter((product) => product.active)
-    .map((product) => ({
-      itemType: 'product' as const,
-      itemId: product.id,
-      label: product.name,
-      exact: [product.sku, ...product.barcodes].some((value) => value.toLowerCase() === needle),
-      text: `${product.sku} ${product.name} ${product.category} ${product.unit} ${product.barcodes.join(' ')}`.toLowerCase(),
-    }))
-  return [...medicineMatches, ...productMatches]
+  return medicineMatches
     .filter((item) => item.exact || item.text.includes(needle))
     .sort((a, b) => Number(b.exact) - Number(a.exact) || a.label.localeCompare(b.label))[0]
 }
@@ -1226,8 +1192,8 @@ function getQuestSteps(db: Database, currentUser: User): QuestStep[] {
   const baseSteps: QuestStep[] = [
     {
       id: 'branch-switcher',
-      title: 'Choose your working branch',
-      body: 'Open the branch selector at the top right and switch to a branch/site so the dashboard reflects the workspace you are testing.',
+      title: 'Choose your working site',
+      body: 'Open the site selector at the top right and switch to the clinic site so the dashboard reflects the file you are testing.',
       view: 'dashboard',
       action: 'Open dashboard',
     },
@@ -1242,24 +1208,24 @@ function getQuestSteps(db: Database, currentUser: User): QuestStep[] {
   const roleSteps: QuestStep[] = [
     {
       id: 'pos-open',
-      title: 'Run a POS test sale',
-      body: 'Open POS, search for an in-stock Pharmacy or Mart item, add it to the cart, then save it as a draft or complete it if you are the cashier.',
+      title: 'Run a prescription dispensing test',
+      body: 'Open Prescriptions, search for an in-stock medicine, add it to the basket, then save it as a draft or record dispensing if you are the cashier.',
       view: 'pos',
-      action: 'Open POS',
+      action: 'Open Prescriptions',
       roles: ['cashier', 'pharmacist'],
     },
     {
       id: 'sales-history',
-      title: 'Review sale history',
-      body: 'Use the history button on POS to filter sales by period and print the reconciliation summary for the beta test.',
+      title: 'Review dispensing history',
+      body: 'Use the history button on Prescriptions to filter dispensing records by period and print the reconciliation summary for the beta test.',
       view: 'pos',
-      action: 'Open POS history',
+      action: 'Open dispensing history',
       roles: ['cashier'],
     },
     {
       id: 'receive-stock',
       title: 'Receive stock',
-      body: 'Open Receive, search by name, SKU, or barcode, then confirm that Pharmacy and Mart receiving flows work as expected.',
+      body: 'Open Receive, search by name, SKU, or barcode, then confirm that Pharmacy receiving flows work as expected.',
       view: 'receive',
       action: 'Open Receive',
       roles: ['inventory', 'pharmacist', 'admin'],
@@ -1273,25 +1239,17 @@ function getQuestSteps(db: Database, currentUser: User): QuestStep[] {
       roles: ['inventory', 'pharmacist', 'admin'],
     },
     {
-      id: 'mart-products',
-      title: 'Check Mart products',
-      body: 'Open Mart and confirm non-medicinal products, quantities, prices, and barcode/SKU records are beta-ready.',
-      view: 'products',
-      action: 'Open Mart',
-      roles: ['inventory', 'cashier', 'admin'],
-    },
-    {
       id: 'requisition',
       title: 'Test internal requisition',
-      body: 'From Pharmacy, review requisitions and confirm requesting, fulfilling, and receiving between branches is clear.',
+      body: 'From Pharmacy, review requisitions and confirm requesting, fulfilling, and receiving between clinic sites is clear.',
       view: 'medicines',
       action: 'Open Pharmacy',
       roles: ['inventory', 'pharmacist', 'admin'],
     },
     {
       id: 'branch-access',
-      title: 'Review branch staff access',
-      body: 'Open Branches and Sites, select a branch, then review the staff access section underneath the branch cards.',
+      title: 'Review site staff access',
+      body: 'Open Sites, select a clinic site, then review the staff access section underneath the site cards.',
       view: 'branches',
       action: 'Open branches',
       branchManagerOnly: true,
@@ -1299,13 +1257,13 @@ function getQuestSteps(db: Database, currentUser: User): QuestStep[] {
     {
       id: 'reports',
       title: 'Export a report',
-      body: 'Open Reports, switch between Pharmacy and Mart, filter stock or movement, then export CSV or Print/PDF.',
+      body: 'Open Reports, switch between Pharmacy, filter stock or movement, then export CSV or Print/PDF.',
       view: 'reports',
       action: 'Open Reports',
     },
     {
       id: 'settings-logo',
-      title: 'Confirm workspace identity',
+      title: 'Confirm company file identity',
       body: 'Open Settings and verify the company logo, account name, and operational thresholds are correct.',
       view: 'settings',
       action: 'Open Settings',
@@ -1500,8 +1458,7 @@ function App() {
   const [connectionError, setConnectionError] = useState('')
   const [hasUsers, setHasUsers] = useState(false)
   const [tenantExists, setTenantExists] = useState(false)
-  const [companySlug, setCompanySlug] = useState(() => getWorkspaceSlugFromLocation() || getStoredCompanySlug())
-  const [authIntent, setAuthIntent] = useState<'landing' | 'setup' | 'signin'>('landing')
+  const [companySlug] = useState(TOTALENERGIES_COMPANY_SLUG)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true)
   const [drawerHandleTop, setDrawerHandleTop] = useState(() => typeof window === 'undefined' ? 360 : Math.round(window.innerHeight / 2))
@@ -1539,21 +1496,12 @@ function App() {
     async function load() {
       try {
         setConnectionError('')
-        const workspaceSlug = getWorkspaceSlugFromLocation() || getStoredCompanySlug()
-        if (workspaceSlug) {
-          storeCompanySlug(workspaceSlug)
-          setCompanySlug(workspaceSlug)
-        }
         const boot = await bootstrap()
         if (!boot.settings) {
           throw new Error('Backend API is not available. Run npx vercel dev with DATABASE_URL for API-backed flows.')
         }
         setHasUsers(boot.hasUsers)
         setTenantExists(boot.tenantExists)
-        if (workspaceSlug && boot.settings.companySlug) {
-          storeCompanySlug(boot.settings.companySlug)
-          setCompanySlug(boot.settings.companySlug)
-        }
         setDb((previous) => ({ ...previous, settings: boot.settings }))
         if (getStoredToken()) {
           const state = await loadState()
@@ -1582,8 +1530,8 @@ function App() {
     if (typeof window === 'undefined') return
     window.sessionStorage.clear()
     if (!userId) return
-    const workspaceKey = db.settings.companySlug || db.settings.companyCode || 'workspace'
-    const userStoragePrefix = `rxledger:${workspaceKey}:${userId}:`
+    const workspaceKey = db.settings.companySlug || db.settings.companyCode || 'file'
+    const userStoragePrefix = `totalenergies:${workspaceKey}:${userId}:`
     Object.keys(window.localStorage).forEach((key) => {
       if (key.startsWith(userStoragePrefix) || key.includes(`:${userId}:`)) {
         window.localStorage.removeItem(key)
@@ -1597,7 +1545,6 @@ function App() {
     setSidebarOpen(false)
     setSidebarCollapsed(true)
     setBranchMenuOpen(false)
-    setAuthIntent('signin')
     setNotice('')
     setConnectionError(message ?? '')
   }, [])
@@ -1640,11 +1587,6 @@ function App() {
       setSessionUserId(result.currentUser.id)
       setHasUsers(true)
       setTenantExists(true)
-      setCompanySlug(result.db.settings.companySlug)
-      storeCompanySlug(result.db.settings.companySlug)
-      if (result.db.settings.companySlug && getWorkspaceSlugFromLocation() !== result.db.settings.companySlug) {
-        window.history.replaceState(null, '', `/${result.db.settings.companySlug}`)
-      }
       setActiveBranchId(getUserHomeBranch(result.db, result.currentUser)?.id ?? result.db.branches.find((branch) => branch.active)?.id ?? 'main')
       setActiveView('dashboard')
     } finally {
@@ -1691,19 +1633,6 @@ function App() {
     } finally {
       setSigningIn(false)
     }
-  }
-
-  async function selectWorkspace(value: string) {
-    const result = await resolveCompany(value)
-    storeCompanySlug(result.slug)
-    setCompanySlug(result.slug)
-    window.history.replaceState(null, '', `/${result.slug}`)
-    const boot = await bootstrap()
-    setHasUsers(boot.hasUsers)
-    setTenantExists(boot.tenantExists)
-    setDb((previous) => ({ ...previous, settings: boot.settings }))
-    setConnectionError('')
-    setAuthIntent('signin')
   }
 
   async function signOut() {
@@ -1822,34 +1751,15 @@ function App() {
     return () => window.clearTimeout(branchSwitchTimerRef.current)
   }, [])
 
-  const isWorkspaceRoute = Boolean(getWorkspaceSlugFromLocation())
-
-  if (!currentUser && loading && !isWorkspaceRoute && authIntent === 'landing' && !getStoredToken()) {
-    return (
-      <RxLedgerLanding
-        onCreateWorkspace={() => setAuthIntent('setup')}
-        onSignIn={() => setAuthIntent('signin')}
-      />
-    )
-  }
-
   if (signingIn) return <WorkspaceLoadingScreen settings={db.settings} />
   if (loading) return <AppLoadingScreen />
 
   if (!currentUser) {
-    if (!isWorkspaceRoute && authIntent === 'landing') {
-      return (
-        <RxLedgerLanding
-          onCreateWorkspace={() => setAuthIntent('setup')}
-          onSignIn={() => setAuthIntent('signin')}
-        />
-      )
-    }
     return (
       <AuthScreen
-        hasUsers={authIntent === 'setup' && !isWorkspaceRoute ? false : hasUsers}
-        tenantExists={authIntent === 'setup' && !isWorkspaceRoute ? false : tenantExists}
-        companySlug={authIntent === 'setup' && !isWorkspaceRoute ? '' : companySlug}
+        hasUsers={hasUsers}
+        tenantExists={tenantExists}
+        companySlug={companySlug}
         settings={db.settings}
         connectionError={connectionError}
         createFirstAdmin={createFirstAdmin}
@@ -1857,8 +1767,6 @@ function App() {
         registerUser={registerUser}
         requestPasswordReset={requestPasswordReset}
         completePasswordReset={completePasswordReset}
-        selectWorkspace={selectWorkspace}
-        backToLanding={!isWorkspaceRoute ? () => setAuthIntent('landing') : undefined}
       />
     )
   }
@@ -1998,7 +1906,7 @@ function App() {
             <div className="branch-loading-panel" role="status" aria-live="polite">
               <span className="loading-spinner" />
               <strong>Switching branch</strong>
-              <span>Loading {branchSwitchLabel} workspace...</span>
+              <span>Loading {branchSwitchLabel} file...</span>
             </div>
           )}
           {activeView === 'dashboard' && <Dashboard db={db} currentUser={currentUser} stockRows={dashboardStockRows} alertStockRows={notificationStockRows} alertStockTotals={notificationStockTotals} canAdmin={canAdmin} activeBranch={activeBranch} assignedBranch={assignedBranch} setActiveView={setActiveView} />}
@@ -2055,10 +1963,10 @@ type PasswordResetCompleteInput = {
   password: string
 }
 
-function RxLedgerLogo({ size = 'normal' }: { size?: 'normal' | 'large' }) {
+function AppLogo({ size = 'normal' }: { size?: 'normal' | 'large' }) {
   return (
     <span className={size === 'large' ? 'rxledger-logo large' : 'rxledger-logo'}>
-      <img src="/favicon.svg" alt="RxLedger logo" />
+      <img src="/favicon.svg" alt="Totalenergies Pharmacy Inventory logo" />
     </span>
   )
 }
@@ -2067,11 +1975,11 @@ function AppLoadingScreen() {
   return (
     <main className="login-screen">
       <section className="login-panel auth-panel">
-        <RxLedgerLogo size="large" />
+        <AppLogo size="large" />
         <div>
-          <span className="eyebrow">RxLedger</span>
+          <span className="eyebrow">Totalenergies Pharmacy Inventory</span>
           <h1>Opening secure sign in</h1>
-          <p>Preparing the app for your workspace.</p>
+          <p>Preparing the app for your company file.</p>
         </div>
       </section>
     </main>
@@ -2084,15 +1992,15 @@ function WorkspaceLoadingScreen({ settings }: { settings: AppSettings }) {
     <main className="login-screen">
       <section className="login-panel auth-panel workspace-loading-panel">
         <div className="workspace-loading-rxledger">
-          <RxLedgerLogo />
-          <span>RxLedger</span>
+          <AppLogo />
+          <span>Totalenergies Pharmacy Inventory</span>
         </div>
         <div className="workspace-loading-company">
           <BrandMark settings={settings} size="large" />
           <div>
             <span className="eyebrow">Connecting</span>
-            <h1>{companyName} workspace</h1>
-            <p>Loading your company workspace and preparing your dashboard.</p>
+            <h1>{companyName} file</h1>
+            <p>Loading your company pharmacy file and preparing your dashboard.</p>
           </div>
         </div>
       </section>
@@ -2149,8 +2057,6 @@ function AuthScreen({
   registerUser,
   requestPasswordReset,
   completePasswordReset,
-  selectWorkspace,
-  backToLanding,
 }: {
   hasUsers: boolean
   tenantExists: boolean
@@ -2162,45 +2068,37 @@ function AuthScreen({
   registerUser: (input: RegisterInput) => Promise<void>
   requestPasswordReset: (input: PasswordResetInput) => Promise<{ ok: boolean; emailConfigured: boolean }>
   completePasswordReset: (input: PasswordResetCompleteInput) => Promise<void>
-  selectWorkspace: (value: string) => Promise<void>
-  backToLanding?: () => void
 }) {
   const [mode, setMode] = useState<AuthMode>(hasUsers ? 'login' : 'setup')
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
-  const workspaceSelected = Boolean(companySlug && tenantExists)
+  const workspaceSelected = Boolean(companySlug)
   const activeMode: AuthMode = tenantExists && hasUsers ? mode : 'setup'
-  const companyName = settings.accountName || settings.pharmacyName || 'Your pharmacy'
+  const companyName = settings.accountName || settings.pharmacyName || 'Totalenergies Clinic Pharmacy'
   const authTitle = activeMode === 'setup'
-    ? 'Create your pharmacy workspace'
+    ? 'Create Totalenergies pharmacy file'
     : activeMode === 'register'
-      ? workspaceSelected ? `Request access to ${companyName}` : 'Request workspace access'
+      ? `Request access to ${companyName}`
       : activeMode === 'reset'
         ? 'Reset your password'
-        : workspaceSelected ? `Sign in to ${companyName}` : 'Sign in to RxLedger'
+        : `Sign in to ${companyName}`
   const authCopy = activeMode === 'setup'
-    ? 'Create the company workspace, first branch, and permanent administrator.'
+    ? 'Create the clinic pharmacy file, first dispensing site, and permanent administrator.'
     : activeMode === 'register'
-      ? workspaceSelected ? 'Submit your staff details for admin review.' : 'Find your company workspace before requesting access.'
+      ? 'Submit your staff details for admin review.'
       : activeMode === 'reset'
-        ? workspaceSelected ? 'Confirm your staff email and phone number before changing your password.' : 'Find your company workspace before resetting your password.'
-        : workspaceSelected ? 'Use your approved staff credentials to continue.' : 'Find your company workspace before entering your staff credentials.'
+        ? 'Confirm your staff email and phone number before changing your password.'
+        : 'Use your approved staff credentials to continue.'
 
   return (
     <main className="login-screen">
       <section className="login-panel auth-panel">
-        {activeMode === 'setup' || !workspaceSelected ? <RxLedgerLogo size="large" /> : <BrandMark settings={settings} size="large" />}
+        {activeMode === 'setup' ? <AppLogo size="large" /> : <BrandMark settings={settings} size="large" />}
         <div>
-          <span className="eyebrow">{activeMode === 'setup' || !workspaceSelected ? 'RxLedger' : companyName}</span>
+          <span className="eyebrow">{activeMode === 'setup' ? 'Totalenergies' : companyName}</span>
           <h1>{authTitle}</h1>
           <p>{authCopy}</p>
         </div>
-        {backToLanding && (
-          <button className="ghost-button" type="button" onClick={backToLanding}>
-            <ChevronLeft size={16} />
-            Back to RxLedger
-          </button>
-        )}
 
         {activeMode !== 'setup' && (
           <div className="tabs auth-tabs">
@@ -2211,16 +2109,6 @@ function AuthScreen({
         )}
 
         {activeMode === 'setup' && <SetupForm createFirstAdmin={createFirstAdmin} setError={setError} initialSlug={companySlug} />}
-        {activeMode !== 'setup' && (
-          <WorkspaceFinder
-            companySlug={companySlug}
-            settings={settings}
-            workspaceSelected={workspaceSelected}
-            selectWorkspace={selectWorkspace}
-            setError={setError}
-            setSuccess={setSuccess}
-          />
-        )}
         {activeMode === 'login' && workspaceSelected && <LoginForm login={login} setError={setError} setSuccess={setSuccess} />}
         {activeMode === 'register' && workspaceSelected && <RegisterForm registerUser={registerUser} setError={setError} setSuccess={setSuccess} />}
         {activeMode === 'reset' && workspaceSelected && <PasswordResetForm requestPasswordReset={requestPasswordReset} completePasswordReset={completePasswordReset} setError={setError} setSuccess={setSuccess} />}
@@ -2230,77 +2118,6 @@ function AuthScreen({
         {success && <div className="form-success">{success}</div>}
       </section>
     </main>
-  )
-}
-
-function WorkspaceFinder({
-  companySlug,
-  settings,
-  workspaceSelected,
-  selectWorkspace,
-  setError,
-  setSuccess,
-}: {
-  companySlug: string
-  settings: AppSettings
-  workspaceSelected: boolean
-  selectWorkspace: (value: string) => Promise<void>
-  setError: (message: string) => void
-  setSuccess: (message: string) => void
-}) {
-  const [workspaceQuery, setWorkspaceQuery] = useState('')
-  const [checking, setChecking] = useState(false)
-  const companyName = settings.accountName || settings.pharmacyName || 'Your pharmacy'
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    const value = workspaceQuery.trim()
-    setError('')
-    setSuccess('')
-    if (!value) {
-      setError('Enter your company access code or unique URL.')
-      return
-    }
-    setChecking(true)
-    try {
-      await selectWorkspace(value)
-      setSuccess('Workspace found. Enter your login details to continue.')
-    } catch (error) {
-      setError(error instanceof Error ? error.message : 'Unable to find that company workspace.')
-    } finally {
-      setChecking(false)
-    }
-  }
-
-  return (
-    <section className="workspace-finder" aria-label="Find your company">
-      <form className="workspace-finder-form" onSubmit={submit}>
-        <h2>Find your company</h2>
-        <p>Enter your company's unique url or code, provided by your admin to find your company's workspace.</p>
-        <label className="sr-only" htmlFor="workspace-access-code">Company access code</label>
-        <input
-          id="workspace-access-code"
-          required
-          value={workspaceQuery}
-          onChange={(event) => setWorkspaceQuery(event.target.value)}
-          placeholder="Company access code"
-          autoComplete="organization"
-        />
-        <button className="primary-button" type="submit" disabled={checking}>
-          {checking ? 'Checking...' : 'Continue'}
-        </button>
-      </form>
-      {workspaceSelected && (
-        <div className="workspace-confirmation" aria-live="polite">
-          <BrandMark settings={settings} />
-          <div>
-            <span>Workspace confirmed</span>
-            <strong>{companyName}</strong>
-            <small>{settings.companyCode ? `Code: ${settings.companyCode}` : `URL: /${companySlug}`}</small>
-          </div>
-        </div>
-      )}
-    </section>
   )
 }
 
@@ -2314,11 +2131,11 @@ function SetupForm({
   initialSlug: string
 }) {
   const [form, setForm] = useState<SetupInput>({
-    pharmacyName: '',
+    pharmacyName: 'Totalenergies Clinic Pharmacy',
     companySlug: initialSlug,
     businessLicense: '',
     mainBranchAddress: '',
-    branchName: 'Main Branch',
+    branchName: 'Totalenergies Clinic',
     name: '',
     email: '',
     phone: '',
@@ -2326,26 +2143,6 @@ function SetupForm({
   })
   const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
-  const [slugStatus, setSlugStatus] = useState<{ state: 'idle' | 'checking' | 'available' | 'taken'; message: string }>({ state: 'idle', message: '' })
-
-  useEffect(() => {
-    const slug = slugifyCompany(form.companySlug || form.pharmacyName)
-    const timeoutId = window.setTimeout(() => {
-      if (!slug) {
-        setSlugStatus({ state: 'idle', message: '' })
-        return
-      }
-      setSlugStatus({ state: 'checking', message: 'Checking workspace name...' })
-      void checkCompanySlug(slug)
-        .then((result) => {
-          setSlugStatus(result.available
-            ? { state: 'available', message: 'This workspace name is available' }
-            : { state: 'taken', message: `This workspace name has already been claimed${result.claimedBy ? ` by ${result.claimedBy}` : ''}` })
-        })
-        .catch((error) => setSlugStatus({ state: 'taken', message: error instanceof Error ? error.message : 'Unable to check workspace name' }))
-    }, 350)
-    return () => window.clearTimeout(timeoutId)
-  }, [form.companySlug, form.pharmacyName])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -2358,13 +2155,9 @@ function SetupForm({
       setError('Passwords do not match.')
       return
     }
-    const companySlug = slugifyCompany(form.companySlug || form.pharmacyName)
+    const companySlug = TOTALENERGIES_COMPANY_SLUG
     if (!companySlug) {
-      setError('Enter a pharmacy/company name.')
-      return
-    }
-    if (slugStatus.state === 'taken') {
-      setError(slugStatus.message)
+      setError('Totalenergies company file is not configured.')
       return
     }
     await createFirstAdmin({ ...form, companySlug })
@@ -2372,11 +2165,10 @@ function SetupForm({
 
   return (
     <form className="form-grid" onSubmit={submit} autoComplete="off">
-      <label className="full">Pharmacy/company name<input required value={form.pharmacyName} onChange={(event) => setForm({ ...form, pharmacyName: event.target.value, companySlug: form.companySlug || slugifyCompany(event.target.value) })} placeholder="Enter your company name" autoFocus /></label>
-      {slugStatus.message && <div className={`form-note full slug-${slugStatus.state}`}>{slugStatus.message}</div>}
-      <label className="full">Business registration/licence details<input required value={form.businessLicense} onChange={(event) => setForm({ ...form, businessLicense: event.target.value })} placeholder="Enter licence or registration reference" /></label>
-      <label className="full">Main branch address<input required value={form.mainBranchAddress} onChange={(event) => setForm({ ...form, mainBranchAddress: event.target.value })} placeholder="Enter main branch address" /></label>
-      <label className="full">First branch/site<input required value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} placeholder="Enter first branch or site name" /></label>
+      <label className="full">Company file<input required value={form.pharmacyName} onChange={(event) => setForm({ ...form, pharmacyName: event.target.value })} placeholder="Totalenergies Clinic Pharmacy" autoFocus /></label>
+      <label className="full">Internal reference/licence details<input required value={form.businessLicense} onChange={(event) => setForm({ ...form, businessLicense: event.target.value })} placeholder="Enter clinic or registration reference" /></label>
+      <label className="full">Main clinic address<input required value={form.mainBranchAddress} onChange={(event) => setForm({ ...form, mainBranchAddress: event.target.value })} placeholder="Enter main clinic address" /></label>
+      <label className="full">First clinic/site<input required value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} placeholder="Enter first clinic or pharmacy site" /></label>
       <label className="full">Permanent admin full name<input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Enter admin full name" /></label>
       <label>Email<input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} placeholder="Enter admin email address" /></label>
       <label>Phone<input required value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} placeholder="Enter admin phone number" /></label>
@@ -2385,7 +2177,7 @@ function SetupForm({
       <div className="form-actions full">
         <button className="primary-button" type="submit">
           <ShieldCheck size={17} />
-          Create RxLedger account
+          Create Totalenergies file
         </button>
       </div>
     </form>
@@ -2559,7 +2351,7 @@ function PasswordResetForm({
         )}
         <button className="primary-button" type="submit">
           <Lock size={17} />
-          {codeRequested ? 'Change password' : 'Send reset code'}
+          {codeRequested ? 'Balance password' : 'Send reset code'}
         </button>
       </div>
     </form>
@@ -3743,7 +3535,7 @@ function ReceiveStock({ db, activeBranch, canWrite, executeAction, flash }: { db
   function applyScan() {
     const match = findReceivableItem(db, scan)
     if (!match) {
-      flash('No medicine or mart product found for that name, SKU, or barcode')
+      flash('No medicine found for that name, SKU, or barcode')
       return
     }
     setLines((current) => current.map((line, index) => {
@@ -3756,7 +3548,7 @@ function ReceiveStock({ db, activeBranch, canWrite, executeAction, flash }: { db
 
   function buildReviewLines() {
     if (!selectedSupplierId || !hasReceivableItems || !activeBranch.id) {
-      flash('Add at least one Pharmacy or Mart item, supplier, and branch before receiving stock')
+      flash('Add at least one medicine, supplier, and clinic site before receiving stock')
       return []
     }
     const items = lines.map((line) => {
@@ -3864,9 +3656,8 @@ function ReceiveStock({ db, activeBranch, canWrite, executeAction, flash }: { db
         <div className="line-editor full">
           {lines.map((line, index) => {
             const medicineOptions = db.medicines.filter((medicine) => medicine.active)
-            const productOptions = db.products.filter((product) => product.active)
-            const selectedItemId = line.itemId || (line.itemType === 'product' ? productOptions[0]?.id : medicineOptions[0]?.id) || ''
-            const hasItemOptions = line.itemType === 'product' ? productOptions.length > 0 : medicineOptions.length > 0
+            const selectedItemId = line.itemId || medicineOptions[0]?.id || ''
+            const hasItemOptions = medicineOptions.length > 0
             const selectedMedicine = selectedMedicineForLine({ ...line, itemId: selectedItemId })
             const lineSummary = receiveLineSummary({ ...line, itemId: selectedItemId })
             return (
@@ -3878,13 +3669,12 @@ function ReceiveStock({ db, activeBranch, canWrite, executeAction, flash }: { db
                   </button>
                 </div>
                 <div className="form-grid">
-                  <label>Item class<select value={line.itemType} onChange={(event) => updateLine(line.rowId, { itemType: event.target.value as ReceiveLine['itemType'], itemId: '' })} disabled={!canWrite}><option value="medicine">Pharmacy</option><option value="product">Mart</option></select></label>
-                  <label className="full">Item<select required value={selectedItemId} onChange={(event) => selectItem(line.rowId, line.itemType, event.target.value)} disabled={!canWrite || !hasItemOptions}><option value="">Select item</option>{line.itemType === 'product' ? productOptions.map((product) => <option key={product.id} value={product.id}>{product.name} / {product.sku}</option>) : medicineOptions.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicineOptionLabel(medicine)}</option>)}</select></label>
-                  <label>Batch/Lot number<input required={line.itemType === 'medicine'} value={line.batchNumber} onChange={(event) => updateLine(line.rowId, { batchNumber: event.target.value })} placeholder={line.itemType === 'product' ? 'Optional for Mart items' : ''} disabled={!canWrite} /></label>
-                  <label>Expiry date<input required={line.itemType === 'medicine'} type="date" value={line.expiryDate} onChange={(event) => updateLine(line.rowId, { expiryDate: event.target.value })} disabled={!canWrite} /></label>
-                  <label>{line.itemType === 'medicine' ? `Containers received${selectedMedicine ? ` (${medicineContainerPackage(selectedMedicine)})` : ''}` : 'Quantity received'}<input required type="number" min="1" value={numberInputValue(line.quantity)} onChange={(event) => updateLine(line.rowId, { quantity: Number(event.target.value) })} disabled={!canWrite} /></label>
-                  <label>{line.itemType === 'medicine' ? 'Cost per container' : 'Unit cost'}<input type="number" min="0" value={numberInputValue(line.unitCost)} onChange={(event) => updateLine(line.rowId, { unitCost: Number(event.target.value) })} disabled={!canWrite} /></label>
-                  <label>{line.itemType === 'medicine' ? 'Selling price / least unit' : 'Selling price'}<input type="number" min="0" value={numberInputValue(line.sellingPrice)} onChange={(event) => updateLine(line.rowId, { sellingPrice: Number(event.target.value) })} disabled={!canWrite || policy.enabled} /></label>
+                  <label className="full">Medicine<select required value={selectedItemId} onChange={(event) => selectItem(line.rowId, 'medicine', event.target.value)} disabled={!canWrite || !hasItemOptions}><option value="">Select medicine</option>{medicineOptions.map((medicine) => <option key={medicine.id} value={medicine.id}>{medicineOptionLabel(medicine)}</option>)}</select></label>
+                  <label>Batch/Lot number<input required value={line.batchNumber} onChange={(event) => updateLine(line.rowId, { batchNumber: event.target.value })} disabled={!canWrite} /></label>
+                  <label>Expiry date<input required type="date" value={line.expiryDate} onChange={(event) => updateLine(line.rowId, { expiryDate: event.target.value })} disabled={!canWrite} /></label>
+                  <label>{`Containers received${selectedMedicine ? ` (${medicineContainerPackage(selectedMedicine)})` : ''}`}<input required type="number" min="1" value={numberInputValue(line.quantity)} onChange={(event) => updateLine(line.rowId, { quantity: Number(event.target.value) })} disabled={!canWrite} /></label>
+                  <label>Cost per container<input type="number" min="0" value={numberInputValue(line.unitCost)} onChange={(event) => updateLine(line.rowId, { unitCost: Number(event.target.value) })} disabled={!canWrite} /></label>
+                  <label>Selling price / least unit<input type="number" min="0" value={numberInputValue(line.sellingPrice)} onChange={(event) => updateLine(line.rowId, { sellingPrice: Number(event.target.value) })} disabled={!canWrite || policy.enabled} /></label>
                   <label>Stock location<input value={line.location} onChange={(event) => updateLine(line.rowId, { location: event.target.value })} disabled={!canWrite} /></label>
                   {lineSummary && (
                     <div className="receive-conversion-note full">
@@ -3898,7 +3688,7 @@ function ReceiveStock({ db, activeBranch, canWrite, executeAction, flash }: { db
                       </div>
                       {policy.enabled && (
                         <div>
-                          <strong>{money.format(calculatedSellingPrice(db, line.itemType, selectedItemId, lineSummary.unitCost).price)}</strong>
+                          <strong>{money.format(calculatedSellingPrice(db, 'medicine', selectedItemId, lineSummary.unitCost).price)}</strong>
                           <span>auto selling price</span>
                         </div>
                       )}
@@ -4169,7 +3959,7 @@ function ProductsView({ db, canWrite, executeAction, flash }: { db: Database; ca
         <div className="section-heading">
           <div>
             <h2>Retail Products</h2>
-            <p>Non-medicinal items available for POS sale.</p>
+            <p>Non-medicinal items available for Medicine dispensed.</p>
           </div>
           <label className="search-box">
             <Search size={16} />
@@ -4219,7 +4009,7 @@ function ProductsView({ db, canWrite, executeAction, flash }: { db: Database; ca
         <div className="section-heading">
           <div>
             <h2>{form.id ? 'Edit Product' : 'Add Product'}</h2>
-            <p>Cost, selling price, and quantity feed directly into POS.</p>
+            <p>Cost, value, and quantity feed directly into prescription dispensing.</p>
           </div>
         </div>
         {!canWrite && <div className="form-error">You need pricing access to create or edit retail products.</div>}
@@ -4310,8 +4100,8 @@ function POSView({
   const [historyEndDate, setHistoryEndDate] = useState(today())
 
   const stockByMedicine = useMemo(() => aggregateMedicineStock(stockRows.filter((row) => row.quantity > 0 && row.daysToExpiry >= 0)), [stockRows])
-  const allSaleOptions: SaleOption[] = useMemo(() => [
-    ...db.medicines
+  const allSaleOptions: SaleOption[] = useMemo(() =>
+    db.medicines
       .filter((medicine) => medicine.active && (stockByMedicine.get(medicine.id) ?? 0) > 0)
       .map((medicine) => {
         const batchPrice = stockRows
@@ -4327,20 +4117,7 @@ function POSView({
           unitPrice: medicine.sellingPrice || batchPrice,
           scanCodes: [medicine.sku, medicine.nafdacNumber, ...medicine.barcodes].filter(Boolean),
         }
-      }),
-    ...db.products
-      .filter((product) => product.active && product.quantity > 0)
-      .map((product) => ({
-        itemType: 'product' as const,
-        itemId: product.id,
-        title: product.name,
-        meta: `${product.category || 'Retail product'} / ${product.unit}`,
-        category: product.category || 'Retail products',
-        available: product.quantity,
-        unitPrice: product.sellingPrice,
-        scanCodes: [product.sku, ...product.barcodes].filter(Boolean),
-      })),
-  ], [db.medicines, db.products, stockByMedicine, stockRows])
+      }), [db.medicines, stockByMedicine, stockRows])
   const branchSales = useMemo(() => db.sales
     .filter((sale) => sale.branchId === activeBranch.id)
     .sort((a, b) => b.soldAt.localeCompare(a.soldAt)), [activeBranch.id, db.sales])
@@ -4477,7 +4254,7 @@ function POSView({
         labelInstruction: defaultLabelInstruction(db, itemType, itemId),
       }]
     })
-    flash(`${option.title} added to POS cart`)
+    flash(`${option.title} added to prescription basket`)
   }
 
   function applyScan() {
@@ -4489,7 +4266,7 @@ function POSView({
         flash(`${medicine.brandName} has no non-expired stock in ${activeBranch.name}`)
         return
       }
-      flash('No stocked medicine or product found for scanned code')
+      flash('No stocked medicine found for scanned code')
       return
     }
     if (option.available <= 0) {
@@ -4524,7 +4301,7 @@ function POSView({
 
   const tillTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   const vatIncluded = total > 0 ? total - (total / 1.075) : 0
-  const suggestedFollowUpMessage = buildPurchaseFollowUpMessage(db, cart)
+  const suggestedFollowUpMessage = buildDispensingFollowUpMessage(db, cart)
 
   function updateCart(rowId: string, updates: Partial<CartItem>) {
     setCart((current) => current.map((item) => {
@@ -4572,7 +4349,7 @@ function POSView({
       flash(`Discount exceeds your ${maxDiscountPercent}% limit`)
       return
     }
-    const saved = await executeAction('savePosDraft', salePayload(), 'POS cart saved as a 10-minute draft')
+    const saved = await executeAction('savePosDraft', salePayload(), 'prescription basket saved as a 10-minute draft')
     if (saved) resetSaleForm()
   }
 
@@ -4590,11 +4367,11 @@ function POSView({
 
   function clearCart() {
     resetSaleForm()
-    flash('POS cart cleared')
+    flash('prescription basket cleared')
   }
 
   function deleteDraft(draftId: string) {
-    void executeAction('clearPosDraft', { branchId: activeBranch.id, draftId }, 'POS draft cleared')
+    void executeAction('clearPosDraft', { branchId: activeBranch.id, draftId }, 'Prescription draft cleared')
     if (draftId === selectedDraftId) resetSaleForm()
   }
 
@@ -4694,19 +4471,19 @@ function POSView({
       return
     }
     if (cartRows.some((item) => item.quantity < 1)) {
-      flash('Enter a quantity for every POS item')
+      flash('Enter a quantity for every medicine item')
       return
     }
     if (cartRows.some((item) => item.quantity > item.available)) {
-      flash('Sale blocked: one or more quantities exceed available stock')
+      flash('Dispensing blocked: one or more quantities exceed available stock')
       return
     }
     if (cartRows.some((item) => !item.option || item.unitPrice <= 0)) {
-      flash('Every POS item needs a saved selling price')
+      flash('Every medicine item needs a saved selling price')
       return
     }
     const labels = buildMedicationLabels()
-    const completed = await executeAction('recordSale', salePayload(), 'Sale completed and inventory deducted')
+    const completed = await executeAction('recordSale', salePayload(), 'Medicine dispensing recorded and inventory deducted')
     if (completed && labels.length) printMedicationLabels(labels)
     if (completed) resetSaleForm()
   }
@@ -4723,7 +4500,7 @@ function POSView({
         <article>
           <h3>${escapeHtml(sale.reference)} - ${money.format(sale.total ?? sale.subtotal)}</h3>
           <p>${new Date(sale.soldAt).toLocaleString()} | Cashier: ${escapeHtml(cashier)} | Payment: ${escapeHtml(sale.paymentMethod)}</p>
-          <p>Customer: ${escapeHtml(sale.customerName || 'Walk-in customer')}${sale.customerPhone ? ` | ${escapeHtml(sale.customerPhone)}` : ''}</p>
+          <p>Staff/patient: ${escapeHtml(sale.customerName || 'Staff member')}${sale.customerPhone ? ` | ${escapeHtml(sale.customerPhone)}` : ''}</p>
           <ul>${items}</ul>
           <p>Discount: ${money.format(sale.discount || 0)} | Subtotal: ${money.format(sale.subtotal)} | Total: ${money.format(sale.total ?? sale.subtotal)}</p>
         </article>
@@ -4736,7 +4513,7 @@ function POSView({
       <!doctype html>
       <html>
         <head>
-          <title>POS sales reconciliation</title>
+          <title>Prescription dispensing reconciliation</title>
           <style>
             body { color: #172024; font-family: Arial, sans-serif; margin: 32px; }
             header { border-bottom: 2px solid #006b45; margin-bottom: 18px; padding-bottom: 12px; }
@@ -4751,7 +4528,7 @@ function POSView({
         </head>
         <body>
           <header>
-            <h1>${escapeHtml(db.settings.accountName)} POS sales reconciliation</h1>
+            <h1>${escapeHtml(db.settings.accountName)} Prescription dispensing reconciliation</h1>
             <p>${escapeHtml(activeBranch.name)} | ${escapeHtml(period)}</p>
             <button onclick="window.print()">Print</button>
           </header>
@@ -4759,7 +4536,7 @@ function POSView({
             <div><strong>${number.format(filteredSales.length)}</strong><br />sales</div>
             <div><strong>${number.format(filteredSalesItems)}</strong><br />items sold</div>
             <div><strong>${money.format(filteredSalesDiscount)}</strong><br />discount</div>
-            <div><strong>${money.format(filteredSalesTotal)}</strong><br />total sales</div>
+            <div><strong>${money.format(filteredSalesTotal)}</strong><br />total cost tracked</div>
           </section>
           <h2>Payment totals</h2>
           <ul>${paymentSummary || '<li>No payment totals</li>'}</ul>
@@ -4781,15 +4558,15 @@ function POSView({
             <span className="pos-branch-meta">· {db.settings.accountName} / {activeBranch.name}</span>
           </div>
           <div className="pos-appbar-right">
-            <span className="pos-shift-pill"><span /> Shift open · {currentUser.name}</span>
+            <span className="pos-shift-pill"><span /> Clinic shift open · {currentUser.name}</span>
             <span className="pos-time-pill"><Clock3 size={13} /> {tillTime}</span>
-            <button className="pos-icon-button" type="button" onClick={() => setHistoryOpen(true)} title="View sales history" aria-label="View sales history">
+            <button className="pos-icon-button" type="button" onClick={() => setHistoryOpen(true)} title="View dispensing history" aria-label="View dispensing history">
               <History size={16} />
             </button>
           </div>
         </div>
 
-        {!canSell && <div className="form-error pos-access-error">You need cashier, pharmacist, branch manager, or admin access in {activeBranch.name} to use POS.</div>}
+        {!canSell && <div className="form-error pos-access-error">You need cashier, pharmacist, site manager, or admin access in {activeBranch.name} to use Prescriptions.</div>}
 
         <form className="pos-terminal-grid" onSubmit={submit}>
           <section className="pos-catalog-panel">
@@ -4820,8 +4597,8 @@ function POSView({
 
             <div className="pos-quick-heading">
               <div>
-                <strong>{query.trim() ? 'Search results' : 'Frequently sold items'}</strong>
-                <span>{query.trim() ? 'Matching stocked Pharmacy and Mart items' : 'Based on real sales history and current stock availability'}</span>
+                <strong>{query.trim() ? 'Search results' : 'Frequently dispensed medicines'}</strong>
+                <span>{query.trim() ? 'Matching stocked medicines' : 'Based on real dispensing history and current stock availability'}</span>
               </div>
             </div>
 
@@ -4845,7 +4622,7 @@ function POSView({
               })}
               {!visibleSaleOptions.length && (
                 <div className="empty-state">
-                  {query.trim() ? 'No stocked medicines or retail products match this search.' : 'No frequently sold stocked items yet. Use search or scan to sell the first items.'}
+                  {query.trim() ? 'No stocked medicines match this search.' : 'No frequently dispensed medicines yet. Use search or scan to record the first medicines.'}
                 </div>
               )}
             </div>
@@ -4854,7 +4631,7 @@ function POSView({
           <aside className="pos-sale-cart">
             <div className="pos-cart-header">
               <div>
-                <h2>Sale cart</h2>
+                <h2>Prescription basket</h2>
                 <p><strong>{cart.length} item{cart.length === 1 ? '' : 's'}</strong> ready / FEFO batch auto-selected</p>
               </div>
               <button className="pos-draft-pill" type="button" onClick={() => setDraftsOpen(true)}>
@@ -4905,13 +4682,13 @@ function POSView({
                   </div>
                 </div>
               ))}
-              {!cartRows.length && <div className="empty-state">Add medicines or products to begin a sale.</div>}
+              {!cartRows.length && <div className="empty-state">Add medicines to begin a prescription dispensing record.</div>}
             </div>
 
             <div className="pos-customer-panel">
               <div className="pos-customer-field">
-                <label htmlFor="pos-customer-name"><User2 size={15} /> Customer</label>
-                <input id="pos-customer-name" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Enter customer name" disabled={!canSell} />
+                <label htmlFor="pos-customer-name"><User2 size={15} /> Staff/patient</label>
+                <input id="pos-customer-name" value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Enter staff or patient name" disabled={!canSell} />
                 {nameMatches.length > 0 && (
                   <div className="pos-patient-suggestions">
                     {nameMatches.map((profile) => (
@@ -4925,7 +4702,7 @@ function POSView({
               </div>
               <div className="pos-customer-field">
                 <label htmlFor="pos-customer-phone"><Phone size={15} /> Phone</label>
-                <input id="pos-customer-phone" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="Enter customer phone number" disabled={!canSell} />
+                <input id="pos-customer-phone" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="Enter staff or patient phone" disabled={!canSell} />
                 {phoneMatches.length > 0 && (
                   <div className="pos-patient-suggestions">
                     {phoneMatches.map((profile) => (
@@ -4968,16 +4745,16 @@ function POSView({
                 <small className={discountTooHigh ? 'discount-limit-note danger' : 'discount-limit-note'}>Limit: {maxDiscountPercent}% / {money.format(maxDiscountAmount)}</small>
               </label>
               <label>
-                <span><Wallet size={15} /> Cash paid</span>
+                <span><Wallet size={15} /> Amount settled</span>
                 <input type="number" min="0" value={numberInputValue(cashPaid)} onChange={(event) => setCashPaid(Number(event.target.value))} placeholder="Enter amount paid" disabled={!canSell} />
               </label>
               <label>
                 <span><StickyNote size={15} /> Note</span>
-                <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add optional sale note" disabled={!canSell} />
+                <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add optional dispensing note" disabled={!canSell} />
               </label>
               <label className="full">
-                <span><MessageSquare size={15} /> Purchase follow-up</span>
-                <textarea value={followUpMessage} onChange={(event) => setFollowUpMessage(event.target.value)} placeholder={suggestedFollowUpMessage || 'One follow-up message for this purchase'} disabled={!canSell} rows={3} />
+                <span><MessageSquare size={15} /> Dispensing follow-up</span>
+                <textarea value={followUpMessage} onChange={(event) => setFollowUpMessage(event.target.value)} placeholder={suggestedFollowUpMessage || 'One follow-up message for this dispensing'} disabled={!canSell} rows={3} />
               </label>
               {suggestedFollowUpMessage && (
                 <div className="pos-followup-suggestion">
@@ -4994,11 +4771,11 @@ function POSView({
               <hr />
               <section>
                 <div>
-                  <span>Total due</span>
+                  <span>Cost tracked</span>
                   <strong>{money.format(total)}</strong>
                 </div>
                 <div>
-                  <span>Change</span>
+                  <span>Balance</span>
                   <strong>{money.format(changeDue)}</strong>
                 </div>
               </section>
@@ -5013,14 +4790,14 @@ function POSView({
                 <XCircle size={16} />
                 Clear
               </button>
-              <button className="complete" type="submit" disabled={!canCompleteSale || !cartRows.length || total <= 0} title={canCompleteSale ? 'Complete sale' : 'Only cashiers can complete sales'}>
+              <button className="complete" type="submit" disabled={!canCompleteSale || !cartRows.length || total <= 0} title={canCompleteSale ? 'Record dispensing' : 'Only cashiers can record dispensing'}>
                 <CheckCircle2 size={17} />
-                Complete sale
+                Record dispensing
                 <span>Enter</span>
               </button>
             </div>
             {canSell && !canCompleteSale && (
-              <div className="pos-cashier-note">Only cashiers can complete sales. Save the cart as a draft for cashier checkout.</div>
+              <div className="pos-cashier-note">Only cashiers can record dispensing. Save the cart as a draft for cashier checkout.</div>
             )}
           </aside>
         </form>
@@ -5031,10 +4808,10 @@ function POSView({
           <section className="pos-modal-panel pos-history-modal" role="dialog" aria-modal="true" aria-labelledby="sales-history-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="pos-modal-header">
               <div>
-                <span className="pos-modal-kicker">POS audit</span>
-                <h3 id="sales-history-title">Sales history</h3>
+                <span className="pos-modal-kicker">Dispensing audit</span>
+                <h3 id="sales-history-title">Dispensing history</h3>
               </div>
-              <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close sales history"><X size={18} /></button>
+              <button type="button" onClick={() => setHistoryOpen(false)} aria-label="Close dispensing history"><X size={18} /></button>
             </header>
             <div className="pos-modal-filter pos-period-filter">
               <label>
@@ -5052,13 +4829,13 @@ function POSView({
             </div>
             <div className="pos-sales-summary">
               <div><span>Sales</span><strong>{number.format(filteredSales.length)}</strong></div>
-              <div><span>Items sold</span><strong>{number.format(filteredSalesItems)}</strong></div>
+              <div><span>Medicines dispensed</span><strong>{number.format(filteredSalesItems)}</strong></div>
               <div><span>Discount</span><strong>{money.format(filteredSalesDiscount)}</strong></div>
               <div><span>Total</span><strong>{money.format(filteredSalesTotal)}</strong></div>
             </div>
             <div className="pos-payment-summary">
               {Object.entries(paymentTotals).map(([method, amount]) => <span key={method}>{method}: <strong>{money.format(amount)}</strong></span>)}
-              {!Object.keys(paymentTotals).length && <span>No sales in this period</span>}
+              {!Object.keys(paymentTotals).length && <span>No dispensing records in this period</span>}
             </div>
             <div className="pos-modal-list">
               {filteredSales.map((sale) => (
@@ -5067,7 +4844,7 @@ function POSView({
                     <strong>{money.format(sale.total ?? sale.subtotal)} / {sale.paymentMethod}</strong>
                     <span>{new Date(sale.soldAt).toLocaleString()} / Ref {sale.reference}{sale.bookingCode ? ` / Draft ${sale.bookingCode}` : ''} / Cashier {getUserName(db, sale.cashierUserId)}</span>
                   </div>
-                  <span>{sale.customerName || 'Walk-in customer'}{sale.customerPhone ? ` / ${sale.customerPhone}` : ''}</span>
+                  <span>{sale.customerName || 'Staff member'}{sale.customerPhone ? ` / ${sale.customerPhone}` : ''}</span>
                   <ul>
                     {sale.items.map((item, index) => (
                       <li key={`${sale.id}-${index}`}>{item.itemName || item.medicineId || item.productId}: {number.format(item.quantity)} x {money.format(item.unitPrice)} = {money.format(item.lineTotal)}</li>
@@ -5076,7 +4853,7 @@ function POSView({
                   {sale.discount > 0 && <small>Discount: {money.format(sale.discount)}</small>}
                 </article>
               ))}
-              {!filteredSales.length && <div className="empty-state">No sales recorded for this period.</div>}
+              {!filteredSales.length && <div className="empty-state">No dispensing records for this period.</div>}
             </div>
           </section>
         </div>
@@ -5087,8 +4864,8 @@ function POSView({
           <section className="pos-modal-panel pos-drafts-modal" role="dialog" aria-modal="true" aria-labelledby="pos-drafts-title" onMouseDown={(event) => event.stopPropagation()}>
             <header className="pos-modal-header">
               <div>
-                <span className="pos-modal-kicker">Temporary carts</span>
-                <h3 id="pos-drafts-title">Draft carts</h3>
+                <span className="pos-modal-kicker">Temporary prescription baskets</span>
+                <h3 id="pos-drafts-title">Prescription drafts</h3>
               </div>
               <button type="button" onClick={() => setDraftsOpen(false)} aria-label="Close draft carts"><X size={18} /></button>
             </header>
@@ -5102,7 +4879,7 @@ function POSView({
                   <article className="pos-draft-item" key={draft.id}>
                     <div>
                       <strong>Draft {draft.bookingCode}</strong>
-                      <span>{draft.customerName || 'Walk-in customer'}{draft.customerPhone ? ` / ${draft.customerPhone}` : ''}</span>
+                      <span>{draft.customerName || 'Staff member'}{draft.customerPhone ? ` / ${draft.customerPhone}` : ''}</span>
                       <small>{draft.items.length} item{draft.items.length === 1 ? '' : 's'} / expires {new Date(draft.expiresAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small>
                     </div>
                     <b>{money.format(draftTotal)}</b>
@@ -5113,7 +4890,7 @@ function POSView({
                   </article>
                 )
               })}
-              {!branchDrafts.length && <div className="empty-state">No active POS drafts for this branch.</div>}
+              {!branchDrafts.length && <div className="empty-state">No active prescription drafts for this site.</div>}
             </div>
           </section>
         </div>
@@ -5183,7 +4960,7 @@ function PatientsView({ db, activeBranch, flash }: { db: Database; activeBranch?
         <div className="section-heading">
           <div>
             <h2>Patient Lookup</h2>
-            <p>Search by phone, name, or receipt reference from POS sales history.</p>
+            <p>Search by phone, name, or receipt reference from medicine dispensing history.</p>
           </div>
           {activeBranch && <span className="pill active">{activeBranch.name}</span>}
         </div>
@@ -5354,7 +5131,7 @@ function Adjustments({ activeBranch, stockRows, canAdjust, executeAction, flash 
       {!canAdjust && <div className="form-error">You only have view access in {activeBranch.name}, or your role cannot post adjustments.</div>}
       <form className="form-grid" onSubmit={submit}>
         <label className="full">Batch<select required value={selectedBatchId} onChange={(event) => setForm({ ...form, batchId: event.target.value })} disabled={!canAdjust || !positiveRows.length}><option value="">Select batch</option>{positiveRows.map((row) => <option key={row.batch.id} value={row.batch.id}>{medicineOptionLabel(row.medicine)} / {row.batch.batchNumber} / Qty {medicineStockLabel(row.medicine, row.quantity)}</option>)}</select></label>
-        <label>Transaction type<select value={form.mode} onChange={(event) => setForm({ ...form, mode: event.target.value as LedgerType })} disabled={!canAdjust}><option value="write-off">Write-off</option><option value="supplier-return">Supplier return</option><option value="customer-return">Customer return</option><option value="adjustment">Positive adjustment</option></select></label>
+        <label>Transaction type<select value={form.mode} onChange={(event) => setForm({ ...form, mode: event.target.value as LedgerType })} disabled={!canAdjust}><option value="write-off">Write-off</option><option value="supplier-return">Supplier return</option><option value="customer-return">Staff/patient return</option><option value="adjustment">Positive adjustment</option></select></label>
         <label>Quantity / least unit<input type="number" min="1" value={numberInputValue(form.quantity)} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} disabled={!canAdjust} /></label>
         <label className="full">Reason<textarea required value={form.reason} onChange={(event) => setForm({ ...form, reason: event.target.value })} disabled={!canAdjust} /></label>
         <label className="full">Reference<input value={form.reference} onChange={(event) => setForm({ ...form, reference: event.target.value })} disabled={!canAdjust} /></label>
@@ -5408,7 +5185,7 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
           const itemName = medicine?.brandName ?? product?.name ?? ''
           const genericName = medicine?.genericName ?? ''
           const category = medicine?.category || product?.category || ''
-          const semanticType = entry.reason === 'POS sale' ? 'pos' : entry.reason.startsWith('Internal requisition') ? 'internal-transfer' : entry.type
+          const semanticType = entry.reason === 'Medicine dispensed' ? 'pos' : entry.reason.startsWith('Internal requisition') ? 'internal-transfer' : entry.type
           const entryDate = entry.createdAt.slice(0, 10)
           return (!movementStartDate || entryDate >= movementStartDate) &&
             (!movementEndDate || entryDate <= movementEndDate) &&
@@ -5424,17 +5201,17 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
           const user = db.users.find((item) => item.id === entry.userId)
           const supplier = batch ? db.suppliers.find((item) => item.id === batch.supplierId) : undefined
           const branchName = getBranchName(db, batch?.branchId ?? entry.toBranchId ?? entry.fromBranchId ?? 'main')
-          const from = entry.fromBranchId ? getBranchName(db, entry.fromBranchId) : entry.type === 'stock-in' ? supplier?.name ?? 'Supplier' : entry.type === 'customer-return' ? 'Customer' : branchName
+          const from = entry.fromBranchId ? getBranchName(db, entry.fromBranchId) : entry.type === 'stock-in' ? supplier?.name ?? 'Supplier' : entry.type === 'customer-return' ? 'Staff/patient' : branchName
           const to = entry.toBranchId ? getBranchName(db, entry.toBranchId) : entry.type === 'supplier-return' ? supplier?.name ?? 'Supplier' : entry.type === 'stock-out' ? entry.reason : entry.type === 'write-off' ? 'Write-off' : branchName
-          const sale = entry.reason === 'POS sale' ? db.sales.find((item) => item.reference === entry.reference) : undefined
+          const sale = entry.reason === 'Medicine dispensed' ? db.sales.find((item) => item.reference === entry.reference) : undefined
           const saleItem = sale?.items.find((item) => entry.itemType === 'product' ? item.productId === entry.productId : item.medicineId === entry.medicineId && (!item.batchId || item.batchId === entry.batchId))
-          const semanticType = entry.reason === 'POS sale' ? 'POS' : entry.reason.startsWith('Internal requisition') ? 'Internal Transfer' : movementLabels[entry.type]
+          const semanticType = entry.reason === 'Medicine dispensed' ? 'Dispensing' : entry.reason.startsWith('Internal requisition') ? 'Internal Transfer' : movementLabels[entry.type]
           const unitPrice = saleItem?.unitPrice ?? entry.sellingPrice ?? 0
-          const salesValue = entry.reason === 'POS sale' ? Math.abs(entry.quantity) * unitPrice : 0
+          const salesValue = entry.reason === 'Medicine dispensed' ? Math.abs(entry.quantity) * unitPrice : 0
           return {
             Date: new Date(entry.createdAt).toLocaleString(),
             Type: semanticType,
-            'Item type': entry.itemType === 'product' ? 'Mart' : 'Pharmacy',
+            'Item type': entry.itemType === 'product' ? 'Product' : 'Pharmacy',
             Medicine: medicine ? medicineReportName(medicine) : product?.name ?? entry.productId ?? 'Unknown',
             Generic: medicine?.genericName ?? '-',
             Form: medicine?.form ?? product?.unit ?? '-',
@@ -5447,7 +5224,7 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
             To: to,
             Quantity: entry.quantity,
             'Unit Price': unitPrice || '-',
-            'Sales Value': salesValue || '-',
+            'Dispensing Value': salesValue || '-',
             Reason: entry.reason,
             Reference: entry.reference,
             User: user?.name ?? 'Unknown',
@@ -5466,7 +5243,7 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
             Date: new Date(receipt.receivedAt).toLocaleString(),
             Supplier: supplier?.name ?? receipt.supplierId,
             Invoice: receipt.invoiceRef,
-            'Item type': item.itemType === 'product' ? 'Mart' : 'Pharmacy',
+            'Item type': item.itemType === 'product' ? 'Product' : 'Pharmacy',
             Medicine: medicine?.brandName ?? product?.name ?? item.medicineId ?? item.productId,
             Generic: medicine?.genericName ?? '-',
             Form: medicine?.form ?? product?.unit ?? '-',
@@ -5536,7 +5313,7 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
             'Selling Price': product.sellingPrice,
             'Cost Value': product.quantity * product.costPrice,
             Supplier: supplier?.name ?? '-',
-            Branch: activeBranch?.name ?? 'Mart register',
+            Branch: activeBranch?.name ?? 'Pharmacy stock',
             Status: product.active ? 'Active' : 'Inactive',
           }
         })
@@ -5567,7 +5344,7 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
   }, [activeBranch, categoryFilter, db, genericFilter, medicineFilter, movementEndDate, movementItemType, movementStartDate, movementType, report, stockItemType, stockRows, stockTotals, supplierDate, supplierFilter])
   const movementQuantityTotal = report === 'movement' ? rows.reduce((sum, row) => sum + Number(row.Quantity ?? 0), 0) : 0
   const movementUnitsMoved = report === 'movement' ? rows.reduce((sum, row) => sum + Math.abs(Number(row.Quantity ?? 0)), 0) : 0
-  const movementSalesTotal = report === 'movement' ? rows.reduce((sum, row) => sum + (Number(row['Sales Value']) || 0), 0) : 0
+  const movementSalesTotal = report === 'movement' ? rows.reduce((sum, row) => sum + (Number(row['Dispensing Value']) || 0), 0) : 0
   const stockQuantityTotal = report === 'stock' ? rows.reduce((sum, row) => sum + Number(row.Quantity ?? 0), 0) : 0
   const stockCostTotal = report === 'stock' ? rows.reduce((sum, row) => sum + Number(row['Cost Value'] ?? 0), 0) : 0
 
@@ -5603,10 +5380,6 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
               <Pill size={16} />
               Pharmacy
             </button>
-            <button className={movementItemType === 'product' ? 'active' : ''} type="button" onClick={() => { setMovementItemType('product'); setCategoryFilter(''); setMedicineFilter(''); setGenericFilter('') }}>
-              <Boxes size={16} />
-              Mart
-            </button>
           </div>
           <div className="report-filters">
             <label>Start date<input type="date" value={movementStartDate} onChange={(event) => setMovementStartDate(event.target.value)} /></label>
@@ -5625,10 +5398,6 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
               <Pill size={16} />
               Pharmacy
             </button>
-            <button className={stockItemType === 'product' ? 'active' : ''} type="button" onClick={() => { setStockItemType('product'); setCategoryFilter(''); setMedicineFilter(''); setGenericFilter('') }}>
-              <Boxes size={16} />
-              Mart
-            </button>
           </div>
           <div className="report-filters">
             <label>{stockItemType === 'medicine' ? 'Brand' : 'Product'}<input value={medicineFilter} onChange={(event) => setMedicineFilter(event.target.value)} placeholder={stockItemType === 'medicine' ? 'Brand name or SKU' : 'Product name or SKU'} /></label>
@@ -5638,7 +5407,7 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
           <div className="report-summary">
             <Archive size={16} />
             <strong>{number.format(stockQuantityTotal)}</strong>
-            <span>{stockItemType === 'medicine' ? 'pharmacy units' : 'mart units'} on hand / {money.format(stockCostTotal)} value</span>
+            <span>pharmacy units on hand / {money.format(stockCostTotal)} value</span>
           </div>
         </>
       )}
@@ -5652,7 +5421,7 @@ function Reports({ db, stockRows, stockTotals, activeBranch }: { db: Database; s
         <div className="report-summary">
           <Archive size={16} />
           <strong>{number.format(movementUnitsMoved)}</strong>
-          <span>units moved{categoryFilter ? ` in ${categoryFilter}` : ''} / net {number.format(movementQuantityTotal)} / POS sales value {money.format(movementSalesTotal)}</span>
+          <span>units moved{categoryFilter ? ` in ${categoryFilter}` : ''} / net {number.format(movementQuantityTotal)} / dispensing value {money.format(movementSalesTotal)}</span>
         </div>
       )}
       <ReportTable rows={rows} />
@@ -5863,55 +5632,55 @@ type GuideCard = {
 const guideCards: GuideCard[] = [
   {
     id: 'branch',
-    title: 'Choose the correct branch',
-    summary: 'Start every shift by confirming the branch/site at the top right of the workspace.',
+    title: 'Choose the correct site',
+    summary: 'Start every shift by confirming the clinic site at the top right of the file.',
     view: 'dashboard',
     shot: 'branch',
-    steps: ['Open Dashboard.', 'Use the branch selector in the top bar.', 'Choose the branch you are working from.', 'Confirm cards and alerts refresh for that branch.'],
+    steps: ['Open Dashboard.', 'Use the site selector in the top bar.', 'Choose the clinic site you are working from.', 'Confirm cards and alerts refresh for that site.'],
   },
   {
     id: 'pos',
-    title: 'Complete a POS sale',
-    summary: 'Cashiers and pharmacists can find in-stock items, add them to cart, apply discounts, and print reconciliation history.',
+    title: 'Record medicine dispensing',
+    summary: 'Cashiers and pharmacists can find in-stock medicines, add them to the prescription basket, track cost, and print reconciliation history.',
     view: 'pos',
     shot: 'pos',
     roles: ['cashier', 'pharmacist'],
-    steps: ['Open POS.', 'Search by product name, SKU, barcode, or use Frequently sold items.', 'Add items to cart and enter customer/payment details.', 'Save draft or complete sale if you are the cashier.'],
+    steps: ['Open Prescriptions.', 'Search by medicine name, SKU, barcode, or use Frequently dispensed medicines.', 'Add medicines to the basket and enter staff/patient details.', 'Save a draft or record dispensing if you are the cashier.'],
   },
   {
     id: 'receive',
-    title: 'Receive Pharmacy and Mart stock',
-    summary: 'Inventory staff receive medicines and general products from the same workflow.',
+    title: 'Receive Pharmacy stock',
+    summary: 'Inventory staff receive medicines into the clinic pharmacy stock file.',
     view: 'receive',
     shot: 'receive',
     roles: ['inventory', 'pharmacist', 'admin'],
-    steps: ['Open Receive.', 'Switch between Pharmacy and Mart where needed.', 'Search by name, SKU, or barcode.', 'Enter invoice, supplier, cost, selling price, quantity, and optional batch/expiry for products.'],
+    steps: ['Open Receive.', 'Search by medicine name, SKU, or barcode.', 'Enter invoice, supplier, cost, value, quantity, batch, and expiry.', 'Review calculated least-unit cost before posting.'],
   },
   {
     id: 'reports',
     title: 'Export stock and movement reports',
-    summary: 'Reports help beta testers check stock at hand, stock movement, POS value, suppliers, expiry, and reorder needs.',
+    summary: 'Reports help beta testers check stock at hand, stock movement, dispensing value, suppliers, expiry, and reorder needs.',
     view: 'reports',
     shot: 'reports',
-    steps: ['Open Reports.', 'Choose Stock on hand or Movement ledger.', 'Switch between Pharmacy and Mart.', 'Filter by date, type, brand/product, generic, or category, then export CSV or print.'],
+    steps: ['Open Reports.', 'Choose Stock on hand or Movement ledger.', 'Filter by date, type, brand, generic, or category, then export CSV or print.'],
   },
   {
     id: 'access',
     title: 'Manage staff access',
-    summary: 'Super admins and branch managers can review which employees can work inside a selected branch.',
+    summary: 'Super admins and site managers can review which employees can work inside a selected clinic site.',
     view: 'branches',
     shot: 'access',
     branchManagerOnly: true,
-    steps: ['Open Branches.', 'Select a branch/site card.', 'Review Staff Access underneath the branch list.', 'Tick access, set expiry dates where needed, and save changes.'],
+    steps: ['Open Sites.', 'Select a clinic site card.', 'Review Staff Access underneath the site list.', 'Tick access, set expiry dates where needed, and save changes.'],
   },
   {
     id: 'settings',
-    title: 'Brand the workspace',
-    summary: 'Super admins can confirm company identity, logo, default branch, and operational thresholds.',
+    title: 'Brand the company file',
+    summary: 'Super admins can confirm company identity, logo, default site, and operational thresholds.',
     view: 'settings',
     shot: 'settings',
     superAdminOnly: true,
-    steps: ['Open Settings.', 'Upload or remove the workspace logo.', 'Confirm company name and licence details.', 'Save near-expiry and approval thresholds.'],
+    steps: ['Open Settings.', 'Upload or remove the company logo.', 'Confirm company name and licence details.', 'Save near-expiry and approval thresholds.'],
   },
   {
     id: 'chat',
@@ -5919,7 +5688,7 @@ const guideCards: GuideCard[] = [
     summary: 'Use group chat for shared updates and direct messages for employee-to-employee coordination.',
     view: 'chat',
     shot: 'chat',
-    steps: ['Open Messages.', 'Choose Group chat or Direct message.', 'Select an employee for direct messages.', 'Send operational notes without leaving the workspace.'],
+    steps: ['Open Messages.', 'Choose Group chat or Direct message.', 'Select an employee for direct messages.', 'Send operational notes without leaving the file.'],
   },
 ]
 
@@ -5942,7 +5711,7 @@ function GuideView({ db, currentUser, setActiveView }: { db: Database; currentUs
       <div className="section-heading">
         <div>
           <h2>{roleLabels[currentUser.role]} Guide</h2>
-          <p>Role-specific walkthroughs for beta testing the workspace without guessing where to start.</p>
+          <p>Role-specific walkthroughs for beta testing the Totalenergies pharmacy file without guessing where to start.</p>
         </div>
         <span className="pill active">{questSteps.length} quest tasks</span>
       </div>
@@ -5977,9 +5746,9 @@ function GuideView({ db, currentUser, setActiveView }: { db: Database; currentUs
 function GuideScreenshot({ type }: { type: GuideCard['shot'] }) {
   const labels: Record<GuideCard['shot'], string[]> = {
     branch: ['Dashboard', 'Port-Harcourt main store', '1 notification'],
-    pos: ['Frequently sold items', 'Sale cart', 'Complete sale'],
+    pos: ['Frequently dispensed medicines', 'Prescription basket', 'Record dispensing'],
     receive: ['Receive stock', 'Search SKU/barcode', 'Invoice items'],
-    reports: ['Movement ledger', 'Pharmacy | Mart', 'CSV / Print'],
+    reports: ['Movement ledger', 'Pharmacy stock', 'CSV / Print'],
     access: ['Branches and Sites', 'Staff Access', 'Can authorize'],
     settings: ['Workspace logo', 'Account Settings', 'Save settings'],
     chat: ['Messages', 'Group chat', 'Direct message'],
@@ -6031,7 +5800,7 @@ function ChatView({ db, currentUser, executeAction }: { db: Database; currentUse
       <div className="section-heading">
         <div>
           <h2>Messages</h2>
-          <p>Send workspace updates to everyone or private notes to another employee.</p>
+          <p>Send file updates to everyone or private notes to another employee.</p>
         </div>
       </div>
       <div className="chat-controls">
@@ -6455,15 +6224,6 @@ function SettingsView({ db, canAdmin, executeAction }: { db: Database; canAdmin:
   const [form, setForm] = useState(db.settings)
   const [categoryMarkupText, setCategoryMarkupText] = useState(() => markupMapToText(db.settings.categoryMarkupPercentages))
   const [productMarkupText, setProductMarkupText] = useState(() => markupMapToText(db.settings.productMarkupPercentages))
-  const currentPlanId = db.settings.subscriptionPlanId ?? trialPolicy.includedPlan
-  const selectedPlanId = form.subscriptionPlanId ?? currentPlanId
-  const selectedPlan = planById(selectedPlanId)
-  const activeUsage = useMemo(() => ({
-    activeBranches: db.branches.filter((branch) => branch.active).length,
-    activeStaff: db.users.filter((user) => user.status === 'active').length,
-  }), [db.branches, db.users])
-  const planBlockers = selectedPlanId === currentPlanId ? [] : planChangeBlockers(activeUsage, selectedPlanId)
-  const trialEnds = form.trialEndsAt ? formatDate(form.trialEndsAt) : ''
 
   async function uploadLogo(file: File) {
     if (file.size > 500_000) {
@@ -6481,10 +6241,6 @@ function SettingsView({ db, canAdmin, executeAction }: { db: Database; canAdmin:
 
   function submit(event: FormEvent) {
     event.preventDefault()
-    if (planBlockers.length) {
-      window.alert(planBlockers.join('\n'))
-      return
-    }
     void executeAction('updateSettings', {
       ...form,
       categoryMarkupPercentages: textToMarkupMap(categoryMarkupText),
@@ -6496,16 +6252,16 @@ function SettingsView({ db, canAdmin, executeAction }: { db: Database; canAdmin:
     <section className="content-section narrow">
       <div className="section-heading">
         <div>
-          <h2>Account Settings</h2>
-          <p>RxLedger account identity and operational thresholds.</p>
+          <h2>Totalenergies Settings</h2>
+          <p>Company pharmacy file identity and operational thresholds.</p>
         </div>
       </div>
       <form className="form-grid" onSubmit={submit}>
         <div className="workspace-logo-editor full">
           <BrandMark settings={form} />
           <div>
-            <strong>Workspace logo</strong>
-            <span>This replaces the default capsule mark inside your company workspace.</span>
+            <strong>Company logo</strong>
+            <span>This replaces the default capsule mark inside the Totalenergies pharmacy file.</span>
           </div>
           <label className="file-button">
             <Upload size={16} />
@@ -6519,10 +6275,10 @@ function SettingsView({ db, canAdmin, executeAction }: { db: Database; canAdmin:
           )}
         </div>
         <label>Software name<input value={form.softwareName} onChange={(event) => setForm({ ...form, softwareName: event.target.value })} disabled={!canAdmin} /></label>
-        <label>Account/company name<input value={form.accountName} onChange={(event) => setForm({ ...form, accountName: event.target.value, pharmacyName: event.target.value })} disabled={!canAdmin} /></label>
-        <label className="full">Business registration/licence<input value={form.businessLicense} onChange={(event) => setForm({ ...form, businessLicense: event.target.value })} disabled={!canAdmin} /></label>
-        <label className="full">Main branch address<input value={form.mainBranchAddress} onChange={(event) => setForm({ ...form, mainBranchAddress: event.target.value })} disabled={!canAdmin} /></label>
-        <label>Default branch name<input value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} disabled={!canAdmin} /></label>
+        <label>Company file name<input value={form.accountName} onChange={(event) => setForm({ ...form, accountName: event.target.value, pharmacyName: event.target.value })} disabled={!canAdmin} /></label>
+        <label className="full">Internal reference/licence<input value={form.businessLicense} onChange={(event) => setForm({ ...form, businessLicense: event.target.value })} disabled={!canAdmin} /></label>
+        <label className="full">Main clinic address<input value={form.mainBranchAddress} onChange={(event) => setForm({ ...form, mainBranchAddress: event.target.value })} disabled={!canAdmin} /></label>
+        <label>Default clinic/site name<input value={form.branchName} onChange={(event) => setForm({ ...form, branchName: event.target.value })} disabled={!canAdmin} /></label>
         <label>Near-expiry days<input type="number" min="1" value={numberInputValue(form.nearExpiryDays)} onChange={(event) => setForm({ ...form, nearExpiryDays: Number(event.target.value) })} disabled={!canAdmin} /></label>
         <label>Approval threshold (NGN)<input type="number" min="0" value={numberInputValue(form.approvalThreshold)} onChange={(event) => setForm({ ...form, approvalThreshold: Number(event.target.value) })} disabled={!canAdmin} /></label>
         <div className="pricing-settings full">
@@ -6556,43 +6312,8 @@ function SettingsView({ db, canAdmin, executeAction }: { db: Database; canAdmin:
             </label>
           </div>
         </div>
-        <div className="subscription-settings full">
-          <div>
-            <span className="eyebrow">Subscription</span>
-            <h3>{selectedPlan.name}</h3>
-            <p>{selectedPlan.summary}</p>
-            {trialEnds && <small>Trial data is preserved. Current trial ends {trialEnds}.</small>}
-          </div>
-          <label>
-            Plan
-            <select
-              value={selectedPlanId}
-              onChange={(event) => setForm({ ...form, subscriptionPlanId: event.target.value as SubscriptionPlanId })}
-              disabled={!canAdmin}
-            >
-              {subscriptionPlans.map((plan) => (
-                <option key={plan.id} value={plan.id}>{plan.name} - {plan.price}{plan.per}</option>
-              ))}
-            </select>
-          </label>
-          <div className="subscription-plan-boundary">
-            <strong>Plan boundary</strong>
-            <span>{activeUsage.activeBranches} active branch{activeUsage.activeBranches === 1 ? '' : 'es'} / {activeUsage.activeStaff} active staff</span>
-            <ul>
-              {selectedPlan.limits.map((limit) => <li key={limit}>{limit}</li>)}
-            </ul>
-          </div>
-          {planBlockers.length > 0 ? (
-            <div className="form-error">
-              {planBlockers.map((blocker) => <span key={blocker}>{blocker}</span>)}
-              <span>Archive, export, or deactivate extra usage before moving to this lower plan. No historical data is deleted.</span>
-            </div>
-          ) : (
-            <div className="empty-state">Plan changes keep stock, sales, patient, branch, and audit history in the workspace.</div>
-          )}
-        </div>
         <div className="form-actions full">
-          <button className="primary-button" type="submit" disabled={!canAdmin || planBlockers.length > 0}>
+          <button className="primary-button" type="submit" disabled={!canAdmin}>
             <Settings size={17} />
             Save settings
           </button>
@@ -6672,3 +6393,5 @@ function ReportTable({ rows }: { rows: ReportRow[] }) {
 }
 
 export default App
+
+

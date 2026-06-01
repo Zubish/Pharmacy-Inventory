@@ -59,7 +59,7 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
     await saveTenantDatabase(companySlug, db)
     await deleteOtherSessions(user.id)
     try {
-      await sendSecurityEmail(email, 'Your RxLedger password was changed', 'Your RxLedger account password was changed using a verification code. If this was not you, contact your account admin immediately.')
+      await sendSecurityEmail(email, 'Your Totalenergies Pharmacy Inventory password was changed', 'Your Totalenergies Pharmacy Inventory account password was changed using a verification code. If this was not you, contact your account admin immediately.')
     } catch {
       // The security event has already been stored; email sending will activate once configured.
     }

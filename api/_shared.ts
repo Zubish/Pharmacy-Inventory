@@ -366,6 +366,8 @@ type HandlerRequest = {
 
 const SESSION_DAYS = 14
 const SESSION_IDLE_MINUTES = 30
+export const TOTALENERGIES_COMPANY_SLUG = 'totalenergies-clinic-pharmacy'
+export const TOTALENERGIES_ACCOUNT_NAME = 'Totalenergies Clinic Pharmacy'
 
 export function createEmptyDatabase(): Database {
   return {
@@ -396,12 +398,12 @@ export function createEmptyDatabase(): Database {
     branchAccessRequests: [],
     auditLogs: [],
     settings: {
-      softwareName: 'RxLedger',
-      accountName: 'Pharmacy Account',
-      pharmacyName: 'RxLedger',
-      branchName: 'Main Branch',
-      companySlug: '',
-      companyCode: '',
+      softwareName: 'Totalenergies Pharmacy Inventory',
+      accountName: TOTALENERGIES_ACCOUNT_NAME,
+      pharmacyName: TOTALENERGIES_ACCOUNT_NAME,
+      branchName: 'Totalenergies Clinic',
+      companySlug: TOTALENERGIES_COMPANY_SLUG,
+      companyCode: 'TOTAL-RX',
       businessLicense: '',
       mainBranchAddress: '',
       logoDataUrl: '',
@@ -471,9 +473,9 @@ export function generateCompanyCode(name: string) {
 }
 
 export function getCompanySlugFromRequest(req: HandlerRequest) {
-  const header = req.headers['x-rxledger-company']
+  const header = req.headers['x-totalenergies-company'] ?? req.headers['x-rxledger-company']
   const raw = Array.isArray(header) ? header[0] : header
-  return normalizeCompanySlug(raw || '')
+  return normalizeCompanySlug(raw || TOTALENERGIES_COMPANY_SLUG) || TOTALENERGIES_COMPANY_SLUG
 }
 
 export function daysUntil(date: string) {
@@ -605,7 +607,7 @@ export function normalizeRootState(raw: Partial<RootState> | Partial<Database>):
       const workspace = normalizeDatabase(tenant.workspace ?? createEmptyDatabase())
       const baseSlug = normalizeCompanySlug(tenant.slug || workspace.settings.companySlug || workspace.settings.accountName) || id('company')
       const lowerName = `${tenant.name || ''} ${workspace.settings.accountName || ''}`.toLowerCase()
-      const slug = lowerName.includes('totalenergies') ? 'totalenergies-pharmacy' : baseSlug
+      const slug = lowerName.includes('totalenergies') ? TOTALENERGIES_COMPANY_SLUG : baseSlug
       workspace.settings.companySlug = slug
       workspace.settings.companyCode = tenant.code || workspace.settings.companyCode || generateCompanyCode(workspace.settings.accountName)
       workspace.settings.businessLicense = workspace.settings.businessLicense || tenant.businessLicense || ''
@@ -648,7 +650,7 @@ export function normalizeRootState(raw: Partial<RootState> | Partial<Database>):
 
 export function createTenantRecord(db: Database, slugSource: string): TenantRecord {
   const workspace = normalizeDatabase(db)
-  const slug = normalizeCompanySlug(slugSource || workspace.settings.accountName) || 'rxledger'
+  const slug = normalizeCompanySlug(slugSource || workspace.settings.accountName) || TOTALENERGIES_COMPANY_SLUG
   const code = workspace.settings.companyCode || generateCompanyCode(workspace.settings.accountName)
   workspace.settings.companySlug = slug
   workspace.settings.companyCode = code
@@ -824,12 +826,12 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
     settings: {
       ...empty.settings,
       ...rawSettings,
-      softwareName: rawSettings.softwareName || 'RxLedger',
+      softwareName: rawSettings.softwareName || 'Totalenergies Pharmacy Inventory',
       accountName,
       pharmacyName: rawSettings.pharmacyName || accountName,
       branchName,
-      companySlug: normalizeCompanySlug(rawSettings.companySlug || accountName),
-      companyCode: rawSettings.companyCode || '',
+      companySlug: normalizeCompanySlug(rawSettings.companySlug || accountName) || TOTALENERGIES_COMPANY_SLUG,
+      companyCode: rawSettings.companyCode || 'TOTAL-RX',
       businessLicense: rawSettings.businessLicense || '',
       mainBranchAddress: rawSettings.mainBranchAddress || '',
       logoDataUrl: rawSettings.logoDataUrl || '',

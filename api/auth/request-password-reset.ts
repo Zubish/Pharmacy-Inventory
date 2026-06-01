@@ -57,7 +57,7 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
       emailSent: false,
     }
     try {
-      const sent = await sendSecurityEmail(email, 'Your RxLedger password reset code', `Use this RxLedger password reset code within 15 minutes:\n\n${code}\n\nIf you did not request this, secure your account or contact your account admin.`)
+      const sent = await sendSecurityEmail(email, 'Your Totalenergies Pharmacy Inventory password reset code', `Use this Totalenergies Pharmacy Inventory password reset code within 15 minutes:\n\n${code}\n\nIf you did not request this, secure your account or contact your account admin.`)
       emailSent = sent.sent
       request.emailSent = emailSent
     } catch (error) {

@@ -292,7 +292,7 @@ async function triggerSecurityPanic(req: HandlerRequest, db: Database, actorId: 
   })
   addAudit(db, actorId, 'Triggered secure account panic action', 'user', actorId, undefined, { signedOutAllSessions: true, clearedRememberedBrowsers: true })
   try {
-    await sendSecurityEmail(actor.email, 'RxLedger account security action triggered', 'Secure my account was triggered for your RxLedger account. All sessions were signed out and remembered browsers were cleared. If this was not you, reset your password immediately.')
+    await sendSecurityEmail(actor.email, 'Totalenergies Pharmacy Inventory security action triggered', 'Secure my account was triggered for your Totalenergies Pharmacy Inventory account. All sessions were signed out and remembered browsers were cleared. If this was not you, reset your password immediately.')
   } catch (error) {
     addSecurityEvent(db, {
       userId: actor.id,
@@ -994,11 +994,11 @@ function normalizeDraftItems(payload: unknown): PosDraft['items'] {
   if (!Array.isArray(payload)) return []
   return payload.map((item) => {
     const input = item as Record<string, unknown>
-    const itemType: 'medicine' | 'product' = input.itemType === 'product' ? 'product' : 'medicine'
+    const itemType = 'medicine' as const
     const daysSupply = Math.max(0, Number(input.daysSupply) || 0)
     return {
       itemType,
-      itemId: requireString(input.itemId, itemType === 'product' ? 'Product' : 'Medicine'),
+      itemId: requireString(input.itemId, 'Medicine'),
       quantity: requireNumber(input.quantity, 'Quantity'),
       daysSupply: daysSupply || undefined,
       counselingNote: optionalString(input.counselingNote),
@@ -1011,9 +1011,9 @@ function savePosDraft(db: Database, actorId: string, actorRole: Role, payload: R
   const actor = db.users.find((user) => user.id === actorId)
   if (!actor) throw new Error('Authentication required')
   const branchId = requireString(payload?.branchId, 'Branch')
-  if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId)) throw new Error('You do not have permission to use POS in this branch')
+  if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId)) throw new Error('You do not have permission to prepare prescriptions in this site')
   const items = normalizeDraftItems(payload?.items)
-  if (!items.length) throw new Error('Add at least one item to save the POS cart')
+  if (!items.length) throw new Error('Add at least one medicine to save the prescription draft')
   const existing = activeDraft(db, actorId, branchId)
   const now = nowIso()
   const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString()
@@ -1035,7 +1035,7 @@ function savePosDraft(db: Database, actorId: string, actorRole: Role, payload: R
     expiresAt,
   }
   db.posDrafts = existing ? db.posDrafts.map((item) => item.id === existing.id ? draft : item) : [draft, ...db.posDrafts]
-  addAudit(db, actorId, 'Saved POS draft cart', 'pos-draft', draft.id, existing, draft)
+  addAudit(db, actorId, 'Saved prescription draft', 'pos-draft', draft.id, existing, draft)
 }
 
 function clearPosDraft(db: Database, actorId: string, payload: Record<string, unknown> | undefined) {
@@ -1047,7 +1047,7 @@ function clearPosDraft(db: Database, actorId: string, payload: Record<string, un
   db.posDrafts = draftId
     ? db.posDrafts.filter((draft) => draft.id !== draftId)
     : db.posDrafts.filter((draft) => !(draft.userId === actorId && draft.branchId === branchId))
-  if (before) addAudit(db, actorId, 'Cleared POS draft cart', 'pos-draft', before.id, before, undefined)
+  if (before) addAudit(db, actorId, 'Cleared prescription draft', 'pos-draft', before.id, before, undefined)
 }
 
 function recordSale(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
@@ -1055,14 +1055,14 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
   if (!actor) throw new Error('Authentication required')
   const branchId = optionalString(payload?.branchId) || db.branches.find((branch) => branch.active)?.id || 'main'
   if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
-  if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId)) throw new Error('You do not have permission to sell in this branch')
-  if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId)) throw new Error('Only cashiers can complete POS sales')
+  if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId)) throw new Error('You do not have permission to dispense in this site')
+  if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId)) throw new Error('Only cashiers can complete medicine dispensing')
   const requestedDraftId = optionalString(payload?.draftId)
   const draft = requestedDraftId
     ? db.posDrafts.find((item) => item.id === requestedDraftId && item.branchId === branchId && item.expiresAt > nowIso())
     : activeDraft(db, actorId, branchId)
   const inputs = normalizeDraftItems(payload?.items ?? draft?.items)
-  if (!inputs.length) throw new Error('Add at least one item to the POS cart')
+  if (!inputs.length) throw new Error('Add at least one medicine to the prescription basket')
 
   const saleItems: Sale['items'] = []
   const ledgerEntries = []
@@ -1097,8 +1097,8 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
         sellingPrice: product.sellingPrice,
         type: 'stock-out' as LedgerType,
         quantity: -quantity,
-        reason: 'POS sale',
-        reference: optionalString(payload?.reference) || 'POS sale',
+        reason: 'Medicine dispensed',
+        reference: optionalString(payload?.reference) || 'Medicine dispensed',
         userId: actorId,
         createdAt: nowIso(),
         fromBranchId: branchId,
@@ -1146,8 +1146,8 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
         batchId: row.batch.id,
         type: 'stock-out' as LedgerType,
         quantity: -take,
-        reason: 'POS sale',
-        reference: optionalString(payload?.reference) || 'POS sale',
+        reason: 'Medicine dispensed',
+        reference: optionalString(payload?.reference) || 'Medicine dispensed',
         userId: actorId,
         createdAt: nowIso(),
       })
@@ -1163,7 +1163,7 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
   const discount = requestedDiscount
   const reference = receiptReference()
   ledgerEntries.forEach((entry) => {
-    if (entry.reason === 'POS sale') entry.reference = reference
+    if (entry.reason === 'Medicine dispensed') entry.reference = reference
   })
 
   const sale: Sale = {
@@ -1186,7 +1186,7 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
   db.ledger.unshift(...ledgerEntries)
   db.sales.unshift(sale)
   db.posDrafts = db.posDrafts.filter((item) => item.id !== draft?.id)
-  addAudit(db, actorId, 'Completed POS sale', 'sale', sale.id, undefined, sale)
+  addAudit(db, actorId, 'Recorded medicine dispensing cost', 'sale', sale.id, undefined, sale)
 }
 
 function updateSellingPrice(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {

@@ -1,4 +1,4 @@
-import { fail, getCompanySlugFromRequest, loadRootState, loadTenantDatabase, requireMethod, sanitizeDatabase, saveRootState } from './_shared.js'
+import { fail, loadRootState, loadTenantDatabase, requireMethod, sanitizeDatabase, saveRootState, TOTALENERGIES_ACCOUNT_NAME, TOTALENERGIES_COMPANY_SLUG } from './_shared.js'
 import type { HandlerRequest, HandlerResponse } from './_shared.js'
 
 export default async function handler(req: HandlerRequest, res: HandlerResponse) {
@@ -6,20 +6,19 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
   try {
     const root = await loadRootState()
     await saveRootState(root)
-    const requestedSlug = getCompanySlugFromRequest(req)
-    const tenant = requestedSlug ? root.tenants.find((item) => item.slug === requestedSlug) : root.tenants.find((item) => item.slug === root.defaultSlug) || root.tenants[0]
-    const db = tenant ? await loadTenantDatabase(tenant.slug) : null
+    const tenant = root.tenants.find((item) => item.slug === TOTALENERGIES_COMPANY_SLUG)
+    const db = tenant ? await loadTenantDatabase(TOTALENERGIES_COMPANY_SLUG) : null
     res.status(200).json({
       hasUsers: Boolean(db && db.users.length > 0),
       tenantExists: Boolean(tenant),
-      requestedSlug,
+      requestedSlug: TOTALENERGIES_COMPANY_SLUG,
       settings: db ? sanitizeDatabase(db).settings : {
-        softwareName: 'RxLedger',
-        accountName: 'Pharmacy Account',
-        pharmacyName: 'RxLedger',
-        branchName: 'Main Branch',
-        companySlug: requestedSlug,
-        companyCode: '',
+        softwareName: 'Totalenergies Pharmacy Inventory',
+        accountName: TOTALENERGIES_ACCOUNT_NAME,
+        pharmacyName: TOTALENERGIES_ACCOUNT_NAME,
+        branchName: 'Totalenergies Clinic',
+        companySlug: TOTALENERGIES_COMPANY_SLUG,
+        companyCode: 'TOTAL-RX',
         businessLicense: '',
         mainBranchAddress: '',
         logoDataUrl: '',

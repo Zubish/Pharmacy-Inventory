@@ -52,7 +52,7 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
         metadata: { deviceId },
       })
       try {
-        await sendSecurityEmail(user.email, 'New RxLedger sign-in detected', `A new sign-in to your RxLedger account was detected.\n\nDevice: ${userAgent || 'Unknown'}\nIP: ${ipAddress || 'Unknown'}\n\nIf this was not you, sign in and use Secure my account.`)
+        await sendSecurityEmail(user.email, 'New Totalenergies Pharmacy Inventory sign-in detected', `A new sign-in to your Totalenergies Pharmacy Inventory account was detected.\n\nDevice: ${userAgent || 'Unknown'}\nIP: ${ipAddress || 'Unknown'}\n\nIf this was not you, sign in and use Secure my account.`)
       } catch (error) {
         addSecurityEvent(db, {
           userId: user.id,

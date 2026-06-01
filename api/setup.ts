@@ -1,4 +1,4 @@
-import { addAudit, createSession, createTenantRecord, fail, generateCompanyCode, hashPassword, id, loadRootState, nowIso, normalizeCompanySlug, requireMethod, sanitizeDatabase, saveRootState } from './_shared.js'
+import { addAudit, createSession, createTenantRecord, fail, hashPassword, id, loadRootState, nowIso, requireMethod, sanitizeDatabase, saveRootState, TOTALENERGIES_ACCOUNT_NAME, TOTALENERGIES_COMPANY_SLUG } from './_shared.js'
 import type { Database, HandlerRequest, HandlerResponse, User } from './_shared.js'
 
 export default async function handler(req: HandlerRequest, res: HandlerResponse) {
@@ -16,13 +16,14 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
       password: string
     }>
     const root = await loadRootState()
-    const companySlug = normalizeCompanySlug(body.companySlug || body.pharmacyName || '')
-    if (!body.pharmacyName || !companySlug || !body.businessLicense || !body.mainBranchAddress || !body.branchName || !body.name || !body.email || !body.phone || !body.password) {
+    const companySlug = TOTALENERGIES_COMPANY_SLUG
+    const pharmacyName = body.pharmacyName?.trim() || TOTALENERGIES_ACCOUNT_NAME
+    if (!body.businessLicense || !body.mainBranchAddress || !body.branchName || !body.name || !body.email || !body.phone || !body.password) {
       fail(res, 400, 'All setup fields are required')
       return
     }
     if (root.tenants.some((tenant) => tenant.slug === companySlug)) {
-      fail(res, 409, `The company URL "${companySlug}" has already been claimed`)
+      fail(res, 409, 'Totalenergies Pharmacy Inventory has already been set up')
       return
     }
     if (body.password.length < 8) {
@@ -33,7 +34,7 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
     const adminId = id('usr')
     const createdAt = nowIso()
     const trialEndsAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
-    const companyCode = generateCompanyCode(body.pharmacyName)
+    const companyCode = 'TOTAL-RX'
     const admin: User = {
       id: adminId,
       name: body.name.trim(),
@@ -67,9 +68,9 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
       requisitions: [],
       branchAccessRequests: [],
       settings: {
-        softwareName: 'RxLedger',
-        accountName: body.pharmacyName.trim(),
-        pharmacyName: body.pharmacyName.trim(),
+        softwareName: 'Totalenergies Pharmacy Inventory',
+        accountName: pharmacyName,
+        pharmacyName,
         branchName: body.branchName.trim(),
         companySlug,
         companyCode,
@@ -95,7 +96,7 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
       active: true,
       createdAt,
     }]
-    addAudit(db, adminId, 'Completed first-run RxLedger account setup', 'system', 'setup')
+    addAudit(db, adminId, 'Completed first-run Totalenergies pharmacy setup', 'system', 'setup')
     const tenant = createTenantRecord(db, companySlug)
     tenant.code = companyCode
     tenant.businessLicense = body.businessLicense.trim()
@@ -109,6 +110,6 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
     const session = await createSession(adminId)
     res.status(200).json({ ...session, db: sanitizeDatabase(db), currentUser: sanitizeDatabase(db).users[0] })
   } catch (error) {
-    fail(res, 500, error instanceof Error ? error.message : 'Unable to set up workspace')
+    fail(res, 500, error instanceof Error ? error.message : 'Unable to set up Totalenergies pharmacy file')
   }
 }
