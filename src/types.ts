@@ -1,6 +1,8 @@
-export type Role = 'admin' | 'pharmacist' | 'inventory' | 'viewer'
+export type Role = 'admin' | 'pharmacist' | 'inventory' | 'cashier' | 'viewer'
 export type UserStatus = 'pending' | 'active' | 'suspended'
 export type LedgerType = 'stock-in' | 'stock-out' | 'adjustment' | 'write-off' | 'supplier-return' | 'customer-return'
+export type SubscriptionPlanId = 'single-branch' | 'smart-pharmacy' | 'enterprise'
+export type PricingRoundingRule = 0 | 1 | 5 | 10 | 50 | 100
 
 export type User = {
   id: string
@@ -32,12 +34,31 @@ export type Medicine = {
   form: string
   strength: string
   unit: string
+  packSize: number
+  sellableUnit: string
+  costPrice: number
+  sellingPrice: number
   category: string
   manufacturer: string
   nafdacNumber: string
   barcodes: string[]
   reorderLevel: number
   active: boolean
+}
+
+export type Product = {
+  id: string
+  sku: string
+  name: string
+  category: string
+  unit: string
+  costPrice: number
+  sellingPrice: number
+  quantity: number
+  barcodes: string[]
+  supplierId: string
+  active: boolean
+  createdAt: string
 }
 
 export type Supplier = {
@@ -76,8 +97,15 @@ export type Batch = {
 
 export type LedgerEntry = {
   id: string
+  itemType?: 'medicine' | 'product'
   medicineId: string
+  productId?: string
   batchId: string
+  batchNumber?: string
+  expiryDate?: string
+  unitCost?: number
+  sellingPrice?: number
+  location?: string
   type: LedgerType
   quantity: number
   reason: string
@@ -95,11 +123,74 @@ export type Receipt = {
   receivedAt: string
   userId: string
   items: Array<{
+    itemType?: 'medicine' | 'product'
     medicineId: string
+    productId?: string
     batchId: string
+    batchNumber?: string
+    expiryDate?: string
+    sellingPrice?: number
+    location?: string
+    branchId?: string
     quantity: number
     unitCost: number
   }>
+}
+
+export type Sale = {
+  id: string
+  branchId: string
+  cashierUserId: string
+  customerName: string
+  customerPhone: string
+  paymentMethod: 'cash' | 'card' | 'transfer' | 'mixed'
+  reference: string
+  note: string
+  followUpMessage?: string
+  soldAt: string
+  subtotal: number
+  discount: number
+  total: number
+  bookingCode?: string
+  items: Array<{
+    itemType: 'medicine' | 'product'
+    medicineId: string
+    productId?: string
+    batchId?: string
+    itemName?: string
+    quantity: number
+    unitPrice: number
+    lineTotal: number
+    daysSupply?: number
+    refillDueAt?: string
+    counselingNote?: string
+    followUpMessage?: string
+    labelInstruction?: string
+  }>
+}
+
+export type PosDraft = {
+  id: string
+  userId: string
+  branchId: string
+  bookingCode: string
+  customerName: string
+  customerPhone: string
+  paymentMethod: Sale['paymentMethod']
+  discount: number
+  note: string
+  followUpMessage?: string
+  items: Array<{
+    itemType: 'medicine' | 'product'
+    itemId: string
+    quantity: number
+    daysSupply?: number
+    counselingNote?: string
+    labelInstruction?: string
+  }>
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
 }
 
 export type AuditLog = {
@@ -116,6 +207,8 @@ export type AuditLog = {
 export type ChatMessage = {
   id: string
   userId: string
+  channel?: 'group' | 'direct'
+  recipientUserId?: string
   body: string
   createdAt: string
 }
@@ -146,14 +239,17 @@ export type SecurityEvent = {
   metadata?: Record<string, unknown>
 }
 
-export type RequisitionStatus = 'pending' | 'fulfilled' | 'rejected' | 'cancelled'
+export type RequisitionStatus = 'pending' | 'released' | 'received' | 'fulfilled' | 'rejected' | 'cancelled'
 
 export type RequisitionItem = {
   id: string
   medicineId: string
   batchId: string
   quantity: number
+  releasedQuantity?: number
   fulfilledQuantity?: number
+  receivedQuantity?: number
+  destinationBatchId?: string
 }
 
 export type Requisition = {
@@ -165,6 +261,10 @@ export type Requisition = {
   items: RequisitionItem[]
   createdAt: string
   updatedAt: string
+  releasedBy?: string
+  releasedAt?: string
+  receivedBy?: string
+  receivedAt?: string
   handledBy?: string
   handledAt?: string
   note?: string
@@ -188,19 +288,39 @@ export type AppSettings = {
   accountName: string
   pharmacyName: string
   branchName: string
+  companySlug: string
+  companyCode: string
+  businessLicense: string
+  mainBranchAddress: string
+  logoDataUrl: string
   primaryAdminId?: string
   nearExpiryDays: number
   approvalThreshold: number
+  autoPricingEnabled?: boolean
+  globalMarkupPercent?: number
+  pricingRoundingRule?: PricingRoundingRule
+  categoryMarkupPercentages?: Record<string, number>
+  productMarkupPercentages?: Record<string, number>
+  cashierDiscountLimitPercent?: number
+  managerDiscountLimitPercent?: number
+  unusualMarkupPercent?: number
+  costChangeWarningPercent?: number
+  subscriptionPlanId?: SubscriptionPlanId
+  trialStartedAt?: string
+  trialEndsAt?: string
 }
 
 export type Database = {
   users: User[]
   medicines: Medicine[]
+  products: Product[]
   suppliers: Supplier[]
   branches: Branch[]
   batches: Batch[]
   ledger: LedgerEntry[]
   receipts: Receipt[]
+  sales: Sale[]
+  posDrafts: PosDraft[]
   chatMessages: ChatMessage[]
   auditLogs: AuditLog[]
   passwordResetRequests: PasswordResetRequest[]
@@ -212,6 +332,9 @@ export type Database = {
 
 export type SetupInput = {
   pharmacyName: string
+  companySlug: string
+  businessLicense: string
+  mainBranchAddress: string
   branchName: string
   name: string
   email: string

@@ -3,9 +3,11 @@
 import { neon } from '@neondatabase/serverless'
 import { createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto'
 
-type Role = 'admin' | 'pharmacist' | 'inventory' | 'viewer'
+type Role = 'admin' | 'pharmacist' | 'inventory' | 'cashier' | 'viewer'
 type UserStatus = 'pending' | 'active' | 'suspended'
 type LedgerType = 'stock-in' | 'stock-out' | 'adjustment' | 'write-off' | 'supplier-return' | 'customer-return'
+type SubscriptionPlanId = 'single-branch' | 'smart-pharmacy' | 'enterprise'
+type PricingRoundingRule = 0 | 1 | 5 | 10 | 50 | 100
 
 type User = {
   id: string
@@ -39,12 +41,31 @@ type Medicine = {
   form: string
   strength: string
   unit: string
+  packSize: number
+  sellableUnit: string
+  costPrice: number
+  sellingPrice: number
   category: string
   manufacturer: string
   nafdacNumber: string
   barcodes: string[]
   reorderLevel: number
   active: boolean
+}
+
+type Product = {
+  id: string
+  sku: string
+  name: string
+  category: string
+  unit: string
+  costPrice: number
+  sellingPrice: number
+  quantity: number
+  barcodes: string[]
+  supplierId: string
+  active: boolean
+  createdAt: string
 }
 
 type Supplier = {
@@ -83,8 +104,15 @@ type Batch = {
 
 type LedgerEntry = {
   id: string
+  itemType?: 'medicine' | 'product'
   medicineId: string
+  productId?: string
   batchId: string
+  batchNumber?: string
+  expiryDate?: string
+  unitCost?: number
+  sellingPrice?: number
+  location?: string
   type: LedgerType
   quantity: number
   reason: string
@@ -98,6 +126,8 @@ type LedgerEntry = {
 type ChatMessage = {
   id: string
   userId: string
+  channel?: 'group' | 'direct'
+  recipientUserId?: string
   body: string
   createdAt: string
 }
@@ -129,14 +159,17 @@ type SecurityEvent = {
   metadata?: Record<string, unknown>
 }
 
-type RequisitionStatus = 'pending' | 'fulfilled' | 'rejected' | 'cancelled'
+type RequisitionStatus = 'pending' | 'released' | 'received' | 'fulfilled' | 'rejected' | 'cancelled'
 
 type RequisitionItem = {
   id: string
   medicineId: string
   batchId: string
   quantity: number
+  releasedQuantity?: number
   fulfilledQuantity?: number
+  receivedQuantity?: number
+  destinationBatchId?: string
 }
 
 type Requisition = {
@@ -148,9 +181,88 @@ type Requisition = {
   items: RequisitionItem[]
   createdAt: string
   updatedAt: string
+  releasedBy?: string
+  releasedAt?: string
+  receivedBy?: string
+  receivedAt?: string
   handledBy?: string
   handledAt?: string
   note?: string
+}
+
+type Sale = {
+  id: string
+  branchId: string
+  cashierUserId: string
+  customerName: string
+  customerPhone: string
+  paymentMethod: 'cash' | 'card' | 'transfer' | 'mixed'
+  reference: string
+  note: string
+  followUpMessage?: string
+  soldAt: string
+  subtotal: number
+  discount: number
+  total: number
+  bookingCode?: string
+  items: Array<{
+    itemType: 'medicine' | 'product'
+    medicineId: string
+    productId?: string
+    batchId?: string
+    itemName?: string
+    quantity: number
+    unitPrice: number
+    lineTotal: number
+    daysSupply?: number
+    refillDueAt?: string
+    counselingNote?: string
+    followUpMessage?: string
+    labelInstruction?: string
+  }>
+}
+
+type PosDraft = {
+  id: string
+  userId: string
+  branchId: string
+  bookingCode: string
+  customerName: string
+  customerPhone: string
+  paymentMethod: Sale['paymentMethod']
+  discount: number
+  note: string
+  followUpMessage?: string
+  items: Array<{
+    itemType: 'medicine' | 'product'
+    itemId: string
+    quantity: number
+    daysSupply?: number
+    counselingNote?: string
+    labelInstruction?: string
+  }>
+  createdAt: string
+  updatedAt: string
+  expiresAt: string
+}
+
+type TenantRecord = {
+  id: string
+  name: string
+  slug: string
+  code: string
+  businessLicense: string
+  mainBranchAddress: string
+  superAdminName: string
+  superAdminEmail: string
+  superAdminPhone: string
+  createdAt: string
+  workspace: Database
+}
+
+type RootState = {
+  tenants: TenantRecord[]
+  defaultSlug: string
 }
 
 type BranchAccessRequestStatus = 'pending' | 'approved' | 'rejected' | 'cancelled'
@@ -169,6 +281,7 @@ type BranchAccessRequest = {
 type Database = {
   users: User[]
   medicines: Medicine[]
+  products: Product[]
   suppliers: Supplier[]
   branches: Branch[]
   batches: Batch[]
@@ -179,8 +292,22 @@ type Database = {
     invoiceRef: string
     receivedAt: string
     userId: string
-    items: Array<{ medicineId: string; batchId: string; quantity: number; unitCost: number }>
+    items: Array<{
+      itemType?: 'medicine' | 'product'
+      medicineId: string
+      productId?: string
+      batchId: string
+      batchNumber?: string
+      expiryDate?: string
+      sellingPrice?: number
+      location?: string
+      branchId?: string
+      quantity: number
+      unitCost: number
+    }>
   }>
+  sales: Sale[]
+  posDrafts: PosDraft[]
   chatMessages: ChatMessage[]
   passwordResetRequests: PasswordResetRequest[]
   securityEvents: SecurityEvent[]
@@ -201,9 +328,26 @@ type Database = {
     accountName: string
     pharmacyName: string
     branchName: string
+    companySlug: string
+    companyCode: string
+    businessLicense: string
+    mainBranchAddress: string
+    logoDataUrl: string
     primaryAdminId?: string
     nearExpiryDays: number
     approvalThreshold: number
+    autoPricingEnabled?: boolean
+    globalMarkupPercent?: number
+    pricingRoundingRule?: PricingRoundingRule
+    categoryMarkupPercentages?: Record<string, number>
+    productMarkupPercentages?: Record<string, number>
+    cashierDiscountLimitPercent?: number
+    managerDiscountLimitPercent?: number
+    unusualMarkupPercent?: number
+    costChangeWarningPercent?: number
+    subscriptionPlanId?: SubscriptionPlanId
+    trialStartedAt?: string
+    trialEndsAt?: string
   }
 }
 
@@ -227,6 +371,7 @@ export function createEmptyDatabase(): Database {
   return {
     users: [],
     medicines: [],
+    products: [],
     suppliers: [],
     branches: [{
       id: 'main',
@@ -242,6 +387,8 @@ export function createEmptyDatabase(): Database {
     batches: [],
     ledger: [],
     receipts: [],
+    sales: [],
+    posDrafts: [],
     chatMessages: [],
     passwordResetRequests: [],
     securityEvents: [],
@@ -253,16 +400,42 @@ export function createEmptyDatabase(): Database {
       accountName: 'Pharmacy Account',
       pharmacyName: 'RxLedger',
       branchName: 'Main Branch',
+      companySlug: '',
+      companyCode: '',
+      businessLicense: '',
+      mainBranchAddress: '',
+      logoDataUrl: '',
       nearExpiryDays: 90,
       approvalThreshold: 25000,
+      autoPricingEnabled: false,
+      globalMarkupPercent: 30,
+      pricingRoundingRule: 10,
+      categoryMarkupPercentages: {},
+      productMarkupPercentages: {},
+      cashierDiscountLimitPercent: 5,
+      managerDiscountLimitPercent: 10,
+      unusualMarkupPercent: 80,
+      costChangeWarningPercent: 30,
+      subscriptionPlanId: 'smart-pharmacy',
+      trialStartedAt: nowIso(),
+      trialEndsAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
     },
   }
 }
 
-export type { Branch, BranchAccessRequest, BranchAccessRequestStatus, ChatMessage, Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, PasswordResetRequest, Requisition, RequisitionItem, Role, SecurityEvent, SecurityEventType, Supplier, User }
+export type { Branch, BranchAccessRequest, BranchAccessRequestStatus, ChatMessage, Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, PasswordResetRequest, PosDraft, Product, Requisition, RequisitionItem, Role, Sale, SecurityEvent, SecurityEventType, Supplier, TenantRecord, User }
 
 export function id(prefix: string) {
   return `${prefix}_${Date.now().toString(36)}_${randomBytes(4).toString('hex')}`
+}
+
+function createMedicineBarcode(existing: Set<string>) {
+  let barcode: string
+  do {
+    barcode = `RXL${Math.floor(100000000000 + Math.random() * 900000000000)}`
+  } while (existing.has(barcode.toLowerCase()))
+  existing.add(barcode.toLowerCase())
+  return barcode
 }
 
 export function nowIso() {
@@ -271,6 +444,36 @@ export function nowIso() {
 
 export function today() {
   return nowIso().slice(0, 10)
+}
+
+export function slugifyCompany(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48)
+}
+
+export function normalizeCompanySlug(value: string) {
+  return slugifyCompany(value)
+}
+
+export function generateCompanyCode(name: string) {
+  const prefix = slugifyCompany(name)
+    .split('-')
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 5) || 'RXL'
+  return `${prefix}-${String(Math.floor(1000 + Math.random() * 9000))}`
+}
+
+export function getCompanySlugFromRequest(req: HandlerRequest) {
+  const header = req.headers['x-rxledger-company']
+  const raw = Array.isArray(header) ? header[0] : header
+  return normalizeCompanySlug(raw || '')
 }
 
 export function daysUntil(date: string) {
@@ -325,20 +528,144 @@ export async function ensureSchema() {
 }
 
 export async function loadDatabase() {
-  await ensureSchema()
-  const sql = getSql()
-  const rows = await sql`SELECT data FROM app_state WHERE id = 1`
-  return normalizeDatabase(rows[0].data as Partial<Database>)
+  const root = await loadRootState()
+  const tenant = root.tenants.find((item) => item.slug === root.defaultSlug) || root.tenants[0]
+  return normalizeDatabase(tenant?.workspace ?? createEmptyDatabase())
 }
 
 export async function saveDatabase(db: Database) {
+  const root = await loadRootState()
+  const slug = db.settings.companySlug || root.defaultSlug
+  const existing = root.tenants.find((item) => item.slug === slug)
+  if (existing) {
+    existing.name = db.settings.accountName
+    existing.businessLicense = db.settings.businessLicense
+    existing.mainBranchAddress = db.settings.mainBranchAddress
+    existing.workspace = normalizeDatabase(db)
+  } else {
+    root.tenants.unshift(createTenantRecord(db, slug || db.settings.accountName))
+    root.defaultSlug = root.tenants[0].slug
+  }
+  await saveRootState(root)
+}
+
+export async function loadRootState() {
+  await ensureSchema()
+  const sql = getSql()
+  const rows = await sql`SELECT data FROM app_state WHERE id = 1`
+  return normalizeRootState(rows[0].data as Partial<RootState> | Partial<Database>)
+}
+
+export async function saveRootState(root: RootState) {
   const sql = getSql()
   await sql`
     UPDATE app_state
-    SET data = ${JSON.stringify(db)}::jsonb,
+    SET data = ${JSON.stringify(normalizeRootState(root))}::jsonb,
         updated_at = now()
     WHERE id = 1
   `
+}
+
+export async function loadTenantDatabase(slug: string) {
+  const root = await loadRootState()
+  const normalizedSlug = normalizeCompanySlug(slug)
+  const tenant = root.tenants.find((item) => item.slug === normalizedSlug)
+  return tenant ? normalizeDatabase(tenant.workspace) : null
+}
+
+export async function saveTenantDatabase(slug: string, db: Database) {
+  const root = await loadRootState()
+  const normalizedSlug = normalizeCompanySlug(slug)
+  const tenant = root.tenants.find((item) => item.slug === normalizedSlug)
+  if (!tenant) throw new Error('Company portal not found')
+  const clean = normalizeDatabase({
+    ...db,
+    settings: {
+      ...db.settings,
+      companySlug: normalizedSlug,
+      companyCode: db.settings.companyCode || tenant.code,
+      businessLicense: db.settings.businessLicense || tenant.businessLicense,
+      mainBranchAddress: db.settings.mainBranchAddress || tenant.mainBranchAddress,
+    },
+  })
+  tenant.name = clean.settings.accountName
+  tenant.businessLicense = clean.settings.businessLicense
+  tenant.mainBranchAddress = clean.settings.mainBranchAddress
+  tenant.superAdminName = clean.users.find((user) => user.id === clean.settings.primaryAdminId)?.name || tenant.superAdminName
+  tenant.superAdminEmail = clean.users.find((user) => user.id === clean.settings.primaryAdminId)?.email || tenant.superAdminEmail
+  tenant.superAdminPhone = clean.users.find((user) => user.id === clean.settings.primaryAdminId)?.phone || tenant.superAdminPhone
+  tenant.workspace = clean
+  await saveRootState(root)
+}
+
+export function normalizeRootState(raw: Partial<RootState> | Partial<Database>): RootState {
+  const candidate = raw as Partial<RootState>
+  if (Array.isArray(candidate.tenants)) {
+    const tenants = candidate.tenants.map((tenant) => {
+      const workspace = normalizeDatabase(tenant.workspace ?? createEmptyDatabase())
+      const baseSlug = normalizeCompanySlug(tenant.slug || workspace.settings.companySlug || workspace.settings.accountName) || id('company')
+      const lowerName = `${tenant.name || ''} ${workspace.settings.accountName || ''}`.toLowerCase()
+      const slug = lowerName.includes('totalenergies') ? 'totalenergies-pharmacy' : baseSlug
+      workspace.settings.companySlug = slug
+      workspace.settings.companyCode = tenant.code || workspace.settings.companyCode || generateCompanyCode(workspace.settings.accountName)
+      workspace.settings.businessLicense = workspace.settings.businessLicense || tenant.businessLicense || ''
+      workspace.settings.mainBranchAddress = workspace.settings.mainBranchAddress || tenant.mainBranchAddress || ''
+      return {
+        id: tenant.id || id('tenant'),
+        name: tenant.name || workspace.settings.accountName,
+        slug,
+        code: workspace.settings.companyCode,
+        businessLicense: tenant.businessLicense || workspace.settings.businessLicense,
+        mainBranchAddress: tenant.mainBranchAddress || workspace.settings.mainBranchAddress,
+        superAdminName: tenant.superAdminName || workspace.users.find((user) => user.id === workspace.settings.primaryAdminId)?.name || '',
+        superAdminEmail: tenant.superAdminEmail || workspace.users.find((user) => user.id === workspace.settings.primaryAdminId)?.email || '',
+        superAdminPhone: tenant.superAdminPhone || workspace.users.find((user) => user.id === workspace.settings.primaryAdminId)?.phone || '',
+        createdAt: tenant.createdAt || nowIso(),
+        workspace,
+      }
+    })
+    return {
+      tenants,
+      defaultSlug: normalizeCompanySlug(candidate.defaultSlug || tenants[0]?.slug || ''),
+    }
+  }
+  const database = normalizeDatabase(raw as Partial<Database>)
+  const tenant = createTenantRecord(database, database.settings.companySlug || database.settings.accountName)
+  const hasExistingWorkspace = Boolean(
+    tenant.workspace.users.length ||
+    tenant.workspace.medicines.length ||
+    tenant.workspace.suppliers.length ||
+    tenant.workspace.batches.length ||
+    tenant.workspace.ledger.length ||
+    tenant.workspace.sales.length ||
+    ((raw as Partial<Database>).settings?.primaryAdminId),
+  )
+  return {
+    tenants: hasExistingWorkspace ? [tenant] : [],
+    defaultSlug: hasExistingWorkspace ? tenant.slug : '',
+  }
+}
+
+export function createTenantRecord(db: Database, slugSource: string): TenantRecord {
+  const workspace = normalizeDatabase(db)
+  const slug = normalizeCompanySlug(slugSource || workspace.settings.accountName) || 'rxledger'
+  const code = workspace.settings.companyCode || generateCompanyCode(workspace.settings.accountName)
+  workspace.settings.companySlug = slug
+  workspace.settings.companyCode = code
+  const primaryAdmin = workspace.users.find((user) => user.id === workspace.settings.primaryAdminId)
+  return {
+    id: id('tenant'),
+    name: workspace.settings.accountName,
+    slug,
+    code,
+    businessLicense: workspace.settings.businessLicense || '',
+    mainBranchAddress: workspace.settings.mainBranchAddress || '',
+    superAdminName: primaryAdmin?.name || '',
+    superAdminEmail: primaryAdmin?.email || '',
+    superAdminPhone: primaryAdmin?.phone || '',
+    createdAt: nowIso(),
+    workspace,
+  }
 }
 
 export function normalizeDatabase(raw: Partial<Database>): Database {
@@ -373,17 +700,109 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
       branchAccessExpiresAt: user.branchAccessExpiresAt ?? {},
     }
   })
+  const existingMedicineBarcodes = new Set<string>()
+  for (const product of raw.products ?? empty.products) {
+    for (const barcode of product.barcodes ?? []) {
+      existingMedicineBarcodes.add(String(barcode).toLowerCase())
+    }
+  }
+  const medicines = (raw.medicines ?? empty.medicines).map((medicine) => {
+    const barcodes = (medicine.barcodes ?? []).map(String).map((item) => item.trim()).filter(Boolean)
+    if (!barcodes.length) barcodes.push(createMedicineBarcode(existingMedicineBarcodes))
+    barcodes.forEach((barcode) => existingMedicineBarcodes.add(barcode.toLowerCase()))
+    return {
+      ...medicine,
+      packSize: Number(medicine.packSize) > 0 ? Number(medicine.packSize) : 1,
+      sellableUnit: medicine.sellableUnit || medicine.unit || 'Unit',
+      costPrice: Number(medicine.costPrice) || 0,
+      sellingPrice: Number(medicine.sellingPrice) || 0,
+      barcodes,
+    }
+  })
+  const sales = (raw.sales ?? empty.sales).map((sale) => {
+    const subtotal = Number(sale.subtotal) || sale.items?.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0) || 0
+    const discount = Number(sale.discount) || 0
+    return {
+      ...sale,
+      subtotal,
+      discount,
+      total: Number(sale.total) || Math.max(0, subtotal - discount),
+      followUpMessage: sale.followUpMessage || undefined,
+      items: (sale.items ?? []).map((item) => ({
+        itemType: item.itemType || 'medicine',
+        medicineId: item.medicineId || '',
+        productId: item.productId,
+        batchId: item.batchId,
+        itemName: item.itemName,
+        quantity: Number(item.quantity) || 0,
+        unitPrice: Number(item.unitPrice) || 0,
+        lineTotal: Number(item.lineTotal) || 0,
+        daysSupply: Number(item.daysSupply) || undefined,
+        refillDueAt: item.refillDueAt || undefined,
+        counselingNote: item.counselingNote || undefined,
+        followUpMessage: item.followUpMessage || undefined,
+        labelInstruction: item.labelInstruction || undefined,
+      })),
+    }
+  })
   return {
     ...empty,
     ...raw,
     users,
-    medicines: raw.medicines ?? empty.medicines,
+    medicines,
+    products: (raw.products ?? empty.products).map((product) => ({
+      ...product,
+      costPrice: Number(product.costPrice) || 0,
+      sellingPrice: Number(product.sellingPrice) || 0,
+      quantity: Number(product.quantity) || 0,
+      barcodes: product.barcodes ?? [],
+      createdAt: product.createdAt || nowIso(),
+    })),
     suppliers: raw.suppliers ?? empty.suppliers,
     branches,
     batches: raw.batches ?? empty.batches,
-    ledger: raw.ledger ?? empty.ledger,
-    receipts: raw.receipts ?? empty.receipts,
-    chatMessages: raw.chatMessages ?? empty.chatMessages,
+    ledger: (raw.ledger ?? empty.ledger).map((entry) => ({
+      ...entry,
+      itemType: entry.itemType === 'product' ? 'product' : 'medicine',
+      medicineId: entry.medicineId || '',
+      productId: entry.productId || '',
+      batchId: entry.batchId || '',
+      quantity: Number(entry.quantity) || 0,
+      unitCost: Number(entry.unitCost) || undefined,
+      sellingPrice: Number(entry.sellingPrice) || undefined,
+    })),
+    receipts: (raw.receipts ?? empty.receipts).map((receipt) => ({
+      ...receipt,
+      items: (receipt.items ?? []).map((item) => ({
+        ...item,
+        itemType: item.itemType === 'product' ? 'product' : 'medicine',
+        medicineId: item.medicineId || '',
+        productId: item.productId || '',
+        batchId: item.batchId || '',
+        branchId: item.branchId || '',
+        quantity: Number(item.quantity) || 0,
+        unitCost: Number(item.unitCost) || 0,
+        sellingPrice: Number(item.sellingPrice) || 0,
+      })),
+    })),
+    sales,
+    posDrafts: (raw.posDrafts ?? empty.posDrafts).filter((draft) => draft.expiresAt > nowIso()).map((draft) => ({
+      ...draft,
+      followUpMessage: draft.followUpMessage || undefined,
+      items: (draft.items ?? []).map((item) => ({
+        itemType: item.itemType === 'product' ? 'product' : 'medicine',
+        itemId: item.itemId || '',
+        quantity: Number(item.quantity) || 0,
+        daysSupply: Number(item.daysSupply) || undefined,
+        counselingNote: item.counselingNote || undefined,
+        labelInstruction: item.labelInstruction || undefined,
+      })),
+    })),
+    chatMessages: (raw.chatMessages ?? empty.chatMessages).map((message) => ({
+      ...message,
+      channel: message.channel === 'direct' ? 'direct' : 'group',
+      recipientUserId: message.recipientUserId || '',
+    })),
     passwordResetRequests: (raw.passwordResetRequests ?? empty.passwordResetRequests).map((request) => {
       const status = String(request.status)
       return {
@@ -393,7 +812,13 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
       }
     }),
     securityEvents: raw.securityEvents ?? empty.securityEvents,
-    requisitions: raw.requisitions ?? empty.requisitions,
+    requisitions: (raw.requisitions ?? empty.requisitions).map((request) => ({
+      ...request,
+      items: (request.items ?? []).map((item) => ({
+        ...item,
+        releasedQuantity: item.releasedQuantity ?? item.fulfilledQuantity,
+      })),
+    })),
     branchAccessRequests: raw.branchAccessRequests ?? empty.branchAccessRequests,
     auditLogs: raw.auditLogs ?? empty.auditLogs,
     settings: {
@@ -403,7 +828,15 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
       accountName,
       pharmacyName: rawSettings.pharmacyName || accountName,
       branchName,
+      companySlug: normalizeCompanySlug(rawSettings.companySlug || accountName),
+      companyCode: rawSettings.companyCode || '',
+      businessLicense: rawSettings.businessLicense || '',
+      mainBranchAddress: rawSettings.mainBranchAddress || '',
+      logoDataUrl: rawSettings.logoDataUrl || '',
       primaryAdminId,
+      subscriptionPlanId: rawSettings.subscriptionPlanId === 'single-branch' || rawSettings.subscriptionPlanId === 'enterprise' ? rawSettings.subscriptionPlanId : 'smart-pharmacy',
+      trialStartedAt: rawSettings.trialStartedAt || empty.settings.trialStartedAt,
+      trialEndsAt: rawSettings.trialEndsAt || empty.settings.trialEndsAt,
     },
   }
 }
@@ -560,7 +993,7 @@ export async function sendSecurityEmail(to: string, subject: string, text: strin
 }
 
 export function canWrite(user: User) {
-  return user.role !== 'viewer'
+  return user.role === 'admin' || user.role === 'pharmacist' || user.role === 'inventory'
 }
 
 export function canAdjust(user: User) {
