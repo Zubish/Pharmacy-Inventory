@@ -49,12 +49,9 @@ import {
   UserPlus,
   User2,
   Users,
-  Wallet,
   X,
   XCircle,
-  Percent,
   Phone,
-  CreditCard,
   Clock3,
 } from 'lucide-react'
 import {
@@ -704,15 +701,6 @@ function calculatedSellingPrice(db: Database, itemType: 'medicine' | 'product', 
     markupPercent: markup.percent,
     source: markup.source,
   }
-}
-
-function discountLimitPercent(db: Database, user: User) {
-  if (isSuperAdmin(db, user) || user.role === 'admin') return 100
-  const policy = pricingPolicy(db.settings)
-  if (db.branches.some((branch) => canManageBranch(db, user, branch.id))) return policy.managerDiscountLimitPercent
-  if (user.role === 'pharmacist' || user.role === 'inventory') return policy.managerDiscountLimitPercent
-  if (user.role === 'cashier') return policy.cashierDiscountLimitPercent
-  return 0
 }
 
 function markupMapToText(map?: Record<string, number>) {
@@ -4086,10 +4074,6 @@ function POSView({
   })) ?? [])
   const [customerName, setCustomerName] = useState(currentDraft?.customerName ?? '')
   const [customerPhone, setCustomerPhone] = useState(currentDraft?.customerPhone ?? '')
-  const [paymentMethod, setPaymentMethod] = useState<Sale['paymentMethod']>(currentDraft?.paymentMethod ?? 'cash')
-  const [discount, setDiscount] = useState(currentDraft?.discount ?? 0)
-  const [discountMode, setDiscountMode] = useState<'amount' | 'percent'>('amount')
-  const [cashPaid, setCashPaid] = useState(0)
   const [note, setNote] = useState(currentDraft?.note ?? '')
   const [followUpMessage, setFollowUpMessage] = useState(currentDraft?.followUpMessage ?? '')
   const [selectedDraftId, setSelectedDraftId] = useState(currentDraft?.id ?? '')
@@ -4156,28 +4140,18 @@ function POSView({
     return { ...item, option, available, unitPrice, lineTotal: item.quantity * unitPrice }
   })
   const subtotal = cartRows.reduce((sum, item) => sum + item.lineTotal, 0)
-  const discountInput = Math.max(0, Number(discount) || 0)
-  const safeDiscount = discountMode === 'percent' ? Math.min(subtotal, subtotal * Math.min(discountInput, 100) / 100) : Math.min(discountInput, subtotal)
-  const maxDiscountPercent = discountLimitPercent(db, currentUser)
-  const maxDiscountAmount = subtotal * (maxDiscountPercent / 100)
-  const discountTooHigh = safeDiscount > maxDiscountAmount
-  const total = Math.max(0, subtotal - safeDiscount)
-  const changeDue = Math.max(0, (Number(cashPaid) || 0) - total)
+  const total = subtotal
   const filteredSales = branchSales.filter((sale) => {
     const soldDate = sale.soldAt.slice(0, 10)
     return (!historyStartDate || soldDate >= historyStartDate) && (!historyEndDate || soldDate <= historyEndDate)
   })
   const filteredSalesTotal = filteredSales.reduce((sum, sale) => sum + (sale.total ?? sale.subtotal), 0)
-  const filteredSalesDiscount = filteredSales.reduce((sum, sale) => sum + (sale.discount ?? 0), 0)
   const filteredSalesItems = filteredSales.reduce((sum, sale) => sum + sale.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0)
-  const paymentTotals = filteredSales.reduce<Record<string, number>>((totals, sale) => {
-    totals[sale.paymentMethod] = (totals[sale.paymentMethod] ?? 0) + (sale.total ?? sale.subtotal)
-    return totals
-  }, {})
+  const filteredPatientCount = new Set(filteredSales.map((sale) => normalizePhone(sale.customerPhone) || sale.customerName.trim().toLowerCase()).filter(Boolean)).size
   const branchDrafts = db.posDrafts
     .filter((draft) => draft.branchId === activeBranch.id && draft.expiresAt > new Date().toISOString())
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-  const canCompleteSale = currentUser.role === 'cashier'
+  const canDispense = currentUser.role === 'cashier'
   const patientProfiles = useMemo(() => buildPatientProfiles(db), [db])
   const selectedPatient = useMemo(() => {
     const phone = normalizePhone(customerPhone)
@@ -4299,7 +4273,6 @@ function POSView({
   }
 
   const tillTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  const vatIncluded = total > 0 ? total - (total / 1.075) : 0
   const suggestedFollowUpMessage = buildDispensingFollowUpMessage(db, cart)
 
   function updateCart(rowId: string, updates: Partial<CartItem>) {
@@ -4318,7 +4291,7 @@ function POSView({
   function selectPatientProfile(profile: ReturnType<typeof buildPatientProfiles>[number]) {
     setCustomerName(profile.name === 'Walk-in patient' ? '' : profile.name)
     setCustomerPhone(profile.phone)
-    flash(`${profile.name} selected for this sale`)
+    flash(`${profile.name} selected`)
   }
 
   function salePayload() {
@@ -4327,8 +4300,8 @@ function POSView({
       draftId: selectedDraftId,
       customerName,
       customerPhone,
-      paymentMethod,
-      discount: safeDiscount,
+      paymentMethod: 'cash' as Sale['paymentMethod'],
+      discount: 0,
       note,
       followUpMessage: followUpMessage.trim() || suggestedFollowUpMessage,
       items: cart.map((item) => ({
@@ -4344,10 +4317,6 @@ function POSView({
 
   async function saveDraft() {
     if (!canSell || !cart.length) return
-    if (discountTooHigh) {
-      flash(`Discount exceeds your ${maxDiscountPercent}% limit`)
-      return
-    }
     const saved = await executeAction('savePosDraft', salePayload(), 'prescription basket saved as a 10-minute draft')
     if (saved) resetSaleForm()
   }
@@ -4356,8 +4325,6 @@ function POSView({
     setCart([])
     setCustomerName('')
     setCustomerPhone('')
-    setDiscount(0)
-    setCashPaid(0)
     setNote('')
     setFollowUpMessage('')
     setScan('')
@@ -4387,10 +4354,6 @@ function POSView({
     })))
     setCustomerName(draft.customerName)
     setCustomerPhone(draft.customerPhone)
-    setPaymentMethod(draft.paymentMethod)
-    setDiscount(draft.discount)
-    setDiscountMode('amount')
-    setCashPaid(0)
     setNote(draft.note)
     setFollowUpMessage(draft.followUpMessage ?? '')
     setDraftsOpen(false)
@@ -4464,11 +4427,7 @@ function POSView({
 
   async function submit(event: FormEvent) {
     event.preventDefault()
-    if (!canCompleteSale || !cart.length) return
-    if (discountTooHigh) {
-      flash(`Discount exceeds your ${maxDiscountPercent}% limit`)
-      return
-    }
+    if (!canDispense || !cart.length) return
     if (cartRows.some((item) => item.quantity < 1)) {
       flash('Enter a quantity for every medicine item')
       return
@@ -4478,11 +4437,11 @@ function POSView({
       return
     }
     if (cartRows.some((item) => !item.option || item.unitPrice <= 0)) {
-      flash('Every medicine item needs a saved selling price')
+      flash('Every medicine item needs a saved cost')
       return
     }
     const labels = buildMedicationLabels()
-    const completed = await executeAction('recordSale', salePayload(), 'Medicine dispensing recorded and inventory deducted')
+    const completed = await executeAction('recordSale', salePayload(), 'Dispensed and cost captured')
     if (completed && labels.length) printMedicationLabels(labels)
     if (completed) resetSaleForm()
   }
@@ -4498,14 +4457,13 @@ function POSView({
       return `
         <article>
           <h3>${escapeHtml(sale.reference)} - ${money.format(sale.total ?? sale.subtotal)}</h3>
-          <p>${new Date(sale.soldAt).toLocaleString()} | Cashier: ${escapeHtml(cashier)} | Payment: ${escapeHtml(sale.paymentMethod)}</p>
+          <p>${new Date(sale.soldAt).toLocaleString()} | Dispensed by: ${escapeHtml(cashier)}</p>
           <p>Staff/patient: ${escapeHtml(sale.customerName || 'Staff member')}${sale.customerPhone ? ` | ${escapeHtml(sale.customerPhone)}` : ''}</p>
           <ul>${items}</ul>
-          <p>Discount: ${money.format(sale.discount || 0)} | Subtotal: ${money.format(sale.subtotal)} | Total: ${money.format(sale.total ?? sale.subtotal)}</p>
+          <p>Cost captured: ${money.format(sale.total ?? sale.subtotal)}</p>
         </article>
       `
     }).join('')
-    const paymentSummary = Object.entries(paymentTotals).map(([method, amount]) => `<li>${escapeHtml(method)}: ${money.format(amount)}</li>`).join('')
     const win = window.open('', '_blank', 'width=900,height=700')
     if (!win) return
     win.document.write(`
@@ -4532,13 +4490,11 @@ function POSView({
             <button onclick="window.print()">Print</button>
           </header>
           <section class="summary">
-            <div><strong>${number.format(filteredSales.length)}</strong><br />sales</div>
-            <div><strong>${number.format(filteredSalesItems)}</strong><br />items sold</div>
-            <div><strong>${money.format(filteredSalesDiscount)}</strong><br />discount</div>
-            <div><strong>${money.format(filteredSalesTotal)}</strong><br />total cost tracked</div>
+            <div><strong>${number.format(filteredSales.length)}</strong><br />records</div>
+            <div><strong>${number.format(filteredSalesItems)}</strong><br />medicines</div>
+            <div><strong>${number.format(filteredPatientCount)}</strong><br />patients</div>
+            <div><strong>${money.format(filteredSalesTotal)}</strong><br />cost captured</div>
           </section>
-          <h2>Payment totals</h2>
-          <ul>${paymentSummary || '<li>No payment totals</li>'}</ul>
           ${rows}
         </body>
       </html>
@@ -4552,12 +4508,12 @@ function POSView({
       <div className="pos-window">
         <div className="pos-appbar">
           <div className="pos-appbar-left">
-            <span className="pos-title-icon"><ShoppingCart size={15} /></span>
-            <strong>Point of Sale</strong>
-            <span className="pos-branch-meta">· {db.settings.accountName} / {activeBranch.name}</span>
+            <span className="pos-title-icon"><Pill size={15} /></span>
+            <strong>Prescriptions</strong>
+            <span className="pos-branch-meta">/ {db.settings.accountName} / {activeBranch.name}</span>
           </div>
           <div className="pos-appbar-right">
-            <span className="pos-shift-pill"><span /> Clinic shift open · {currentUser.name}</span>
+            <span className="pos-shift-pill"><span /> Clinic shift open / {currentUser.name}</span>
             <span className="pos-time-pill"><Clock3 size={13} /> {tillTime}</span>
             <button className="pos-icon-button" type="button" onClick={() => setHistoryOpen(true)} title="View dispensing history" aria-label="View dispensing history">
               <History size={16} />
@@ -4584,7 +4540,7 @@ function POSView({
                       applyScan()
                     }
                   }}
-                  placeholder="Search product, batch or scan barcode..."
+                  placeholder="Search medicine, batch or scan barcode..."
                   disabled={!canSell}
                 />
               </label>
@@ -4631,7 +4587,7 @@ function POSView({
             <div className="pos-cart-header">
               <div>
                 <h2>Prescription basket</h2>
-                <p><strong>{cart.length} item{cart.length === 1 ? '' : 's'}</strong> ready / FEFO batch auto-selected</p>
+                <p><strong>{cart.length} item{cart.length === 1 ? '' : 's'}</strong> ready / FEFO batch selected</p>
               </div>
               <button className="pos-draft-pill" type="button" onClick={() => setDraftsOpen(true)}>
                 <FileText size={13} />
@@ -4681,7 +4637,7 @@ function POSView({
                   </div>
                 </div>
               ))}
-              {!cartRows.length && <div className="empty-state">Add medicines to begin a prescription dispensing record.</div>}
+              {!cartRows.length && <div className="empty-state">Add medicines to begin.</div>}
             </div>
 
             <div className="pos-customer-panel">
@@ -4719,41 +4675,13 @@ function POSView({
                   <span>{selectedPatient.phone} / {selectedPatient.sales.length} previous visit{selectedPatient.sales.length === 1 ? '' : 's'} / last seen {new Date(selectedPatient.lastVisit).toLocaleDateString()}</span>
                 </button>
               )}
-              <div className="pos-payment-block">
-                <span><Wallet size={15} /> Payment method</span>
-                <div>
-                  {[
-                    { value: 'cash' as const, label: 'Cash', icon: Wallet },
-                    { value: 'card' as const, label: 'Card', icon: CreditCard },
-                    { value: 'transfer' as const, label: 'Transfer', icon: Smartphone },
-                  ].map(({ value, label, icon: Icon }) => (
-                    <button className={paymentMethod === value ? 'active' : ''} key={value} type="button" onClick={() => setPaymentMethod(value)} disabled={!canSell}>
-                      <Icon size={14} />
-                      {label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <label>
-                <span><Percent size={15} /> Discount</span>
-                <div className="pos-discount-control">
-                  <input type="number" min="0" max={discountMode === 'percent' ? 100 : subtotal} value={numberInputValue(discount)} onChange={(event) => setDiscount(Number(event.target.value))} disabled={!canSell} />
-                  <button className={discountMode === 'amount' ? 'active' : ''} type="button" onClick={() => setDiscountMode('amount')} disabled={!canSell}>{String.fromCharCode(8358)}</button>
-                  <button className={discountMode === 'percent' ? 'active' : ''} type="button" onClick={() => setDiscountMode('percent')} disabled={!canSell}>%</button>
-                </div>
-                <small className={discountTooHigh ? 'discount-limit-note danger' : 'discount-limit-note'}>Limit: {maxDiscountPercent}% / {money.format(maxDiscountAmount)}</small>
-              </label>
-              <label>
-                <span><Wallet size={15} /> Amount settled</span>
-                <input type="number" min="0" value={numberInputValue(cashPaid)} onChange={(event) => setCashPaid(Number(event.target.value))} placeholder="Enter amount paid" disabled={!canSell} />
-              </label>
-              <label>
+              <label className="full">
                 <span><StickyNote size={15} /> Note</span>
-                <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add optional dispensing note" disabled={!canSell} />
+                <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Additional information or comment" disabled={!canSell} />
               </label>
               <label className="full">
-                <span><MessageSquare size={15} /> Dispensing follow-up</span>
-                <textarea value={followUpMessage} onChange={(event) => setFollowUpMessage(event.target.value)} placeholder={suggestedFollowUpMessage || 'One follow-up message for this dispensing'} disabled={!canSell} rows={3} />
+                <span><MessageSquare size={15} /> Follow-up message</span>
+                <textarea value={followUpMessage} onChange={(event) => setFollowUpMessage(event.target.value)} placeholder={suggestedFollowUpMessage || 'Optional follow-up message'} disabled={!canSell} rows={3} />
               </label>
               {suggestedFollowUpMessage && (
                 <div className="pos-followup-suggestion">
@@ -4764,18 +4692,14 @@ function POSView({
             </div>
 
             <div className="pos-total-panel">
-              <div><span>Subtotal</span><strong>{money.format(subtotal)}</strong></div>
-              <div><span>Discount</span><strong>-{money.format(safeDiscount)}</strong></div>
-              <div><span>VAT (incl.)</span><strong>{money.format(vatIncluded)}</strong></div>
-              <hr />
               <section>
                 <div>
-                  <span>Cost tracked</span>
+                  <span>Patient medicine cost</span>
                   <strong>{money.format(total)}</strong>
                 </div>
                 <div>
-                  <span>Balance</span>
-                  <strong>{money.format(changeDue)}</strong>
+                  <span>Items</span>
+                  <strong>{number.format(cartRows.reduce((sum, item) => sum + item.quantity, 0))}</strong>
                 </div>
               </section>
             </div>
@@ -4789,14 +4713,14 @@ function POSView({
                 <XCircle size={16} />
                 Clear
               </button>
-              <button className="complete" type="submit" disabled={!canCompleteSale || !cartRows.length || total <= 0} title={canCompleteSale ? 'Record dispensing' : 'Only cashiers can record dispensing'}>
+              <button className="complete" type="submit" disabled={!canDispense || !cartRows.length || total <= 0} title={canDispense ? 'Dispense medicines' : 'Only assigned dispensing staff can dispense'}>
                 <CheckCircle2 size={17} />
-                Record dispensing
+                Dispense
                 <span>Enter</span>
               </button>
             </div>
-            {canSell && !canCompleteSale && (
-              <div className="pos-cashier-note">Only cashiers can record dispensing. Save the cart as a draft for cashier checkout.</div>
+            {canSell && !canDispense && (
+              <div className="pos-cashier-note">Only assigned dispensing staff can dispense. Save as a draft for handoff.</div>
             )}
           </aside>
         </form>
@@ -4827,21 +4751,17 @@ function POSView({
               </button>
             </div>
             <div className="pos-sales-summary">
-              <div><span>Sales</span><strong>{number.format(filteredSales.length)}</strong></div>
-              <div><span>Medicines dispensed</span><strong>{number.format(filteredSalesItems)}</strong></div>
-              <div><span>Discount</span><strong>{money.format(filteredSalesDiscount)}</strong></div>
-              <div><span>Total</span><strong>{money.format(filteredSalesTotal)}</strong></div>
-            </div>
-            <div className="pos-payment-summary">
-              {Object.entries(paymentTotals).map(([method, amount]) => <span key={method}>{method}: <strong>{money.format(amount)}</strong></span>)}
-              {!Object.keys(paymentTotals).length && <span>No dispensing records in this period</span>}
+              <div><span>Records</span><strong>{number.format(filteredSales.length)}</strong></div>
+              <div><span>Medicines</span><strong>{number.format(filteredSalesItems)}</strong></div>
+              <div><span>Patients</span><strong>{number.format(filteredPatientCount)}</strong></div>
+              <div><span>Cost captured</span><strong>{money.format(filteredSalesTotal)}</strong></div>
             </div>
             <div className="pos-modal-list">
               {filteredSales.map((sale) => (
                 <article className="sale-history-item" key={sale.id}>
                   <div>
-                    <strong>{money.format(sale.total ?? sale.subtotal)} / {sale.paymentMethod}</strong>
-                    <span>{new Date(sale.soldAt).toLocaleString()} / Ref {sale.reference}{sale.bookingCode ? ` / Draft ${sale.bookingCode}` : ''} / Cashier {getUserName(db, sale.cashierUserId)}</span>
+                    <strong>{money.format(sale.total ?? sale.subtotal)}</strong>
+                    <span>{new Date(sale.soldAt).toLocaleString()} / Ref {sale.reference}{sale.bookingCode ? ` / Draft ${sale.bookingCode}` : ''} / Dispensed by {getUserName(db, sale.cashierUserId)}</span>
                   </div>
                   <span>{sale.customerName || 'Staff member'}{sale.customerPhone ? ` / ${sale.customerPhone}` : ''}</span>
                   <ul>
@@ -4849,7 +4769,6 @@ function POSView({
                       <li key={`${sale.id}-${index}`}>{item.itemName || item.medicineId || item.productId}: {number.format(item.quantity)} x {money.format(item.unitPrice)} = {money.format(item.lineTotal)}</li>
                     ))}
                   </ul>
-                  {sale.discount > 0 && <small>Discount: {money.format(sale.discount)}</small>}
                 </article>
               ))}
               {!filteredSales.length && <div className="empty-state">No dispensing records for this period.</div>}
@@ -5643,7 +5562,7 @@ const guideCards: GuideCard[] = [
     view: 'pos',
     shot: 'pos',
     roles: ['cashier', 'pharmacist'],
-    steps: ['Open Prescriptions.', 'Search by medicine name, SKU, barcode, or use Frequently dispensed medicines.', 'Add medicines to the basket and enter staff/patient details.', 'Save a draft or record dispensing if you are the cashier.'],
+    steps: ['Open Prescriptions.', 'Search by medicine name, SKU, barcode, or use frequently used medicines.', 'Add medicines to the basket and enter staff/patient details.', 'Save a draft or dispense if you are assigned to that role.'],
   },
   {
     id: 'receive',
@@ -5744,7 +5663,7 @@ function GuideView({ db, currentUser, setActiveView }: { db: Database; currentUs
 function GuideScreenshot({ type }: { type: GuideCard['shot'] }) {
   const labels: Record<GuideCard['shot'], string[]> = {
     branch: ['Dashboard', 'Port-Harcourt main store', '1 notification'],
-    pos: ['Frequently dispensed medicines', 'Prescription basket', 'Record dispensing'],
+    pos: ['Frequently used medicines', 'Prescription basket', 'Dispense'],
     receive: ['Receive stock', 'Search SKU/barcode', 'Invoice items'],
     reports: ['Movement ledger', 'Pharmacy stock', 'CSV / Print'],
     access: ['Branches and Sites', 'Staff Access', 'Can authorize'],

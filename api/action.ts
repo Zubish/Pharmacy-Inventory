@@ -1056,7 +1056,7 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
   const branchId = optionalString(payload?.branchId) || db.branches.find((branch) => branch.active)?.id || 'main'
   if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
   if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId)) throw new Error('You do not have permission to dispense in this site')
-  if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId)) throw new Error('Only cashiers can complete medicine dispensing')
+  if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId)) throw new Error('Only assigned dispensing staff can dispense medicines')
   const requestedDraftId = optionalString(payload?.draftId)
   const draft = requestedDraftId
     ? db.posDrafts.find((item) => item.id === requestedDraftId && item.branchId === branchId && item.expiresAt > nowIso())
@@ -1073,7 +1073,7 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
       const product = db.products.find((item) => item.id === input.itemId && item.active)
       if (!product) throw new Error('Active product not found')
       if (quantity > product.quantity) throw new Error(`${product.name} does not have enough stock`)
-      if (product.sellingPrice <= 0) throw new Error(`${product.name} needs a selling price before it can be sold`)
+      if (product.sellingPrice <= 0) throw new Error(`${product.name} needs a saved cost before it can be dispensed`)
       product.quantity -= quantity
       saleItems.push({
         itemType: 'product',
@@ -1124,7 +1124,7 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
       if (remaining <= 0) break
       const take = Math.min(row.quantity, remaining)
       const unitPrice = medicine.sellingPrice || row.batch.sellingPrice
-      if (unitPrice <= 0) throw new Error(`${medicine.brandName} needs a selling price before it can be sold`)
+      if (unitPrice <= 0) throw new Error(`${medicine.brandName} needs a saved cost before it can be dispensed`)
       const lineTotal = take * unitPrice
       saleItems.push({
         itemType: 'medicine',
