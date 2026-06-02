@@ -283,6 +283,7 @@ type PosDraft = {
     itemType: 'medicine' | 'product'
     itemId: string
     quantity: number
+    requestedQuantity?: number
     daysSupply?: number
     counselingNote?: string
     labelInstruction?: string
@@ -2150,7 +2151,7 @@ function App() {
           {activeView === 'suppliers' && <Suppliers db={db} canWrite={canWrite} executeAction={executeAction} />}
           {activeView === 'receive' && activeBranch && <ReceiveStock db={db} activeBranch={activeBranch} canWrite={Boolean(canWriteActiveBranch)} executeAction={executeAction} flash={flash} />}
           {activeView === 'pos' && activeBranch && <POSView key={`${currentUser.id}-${activeBranch.id}`} db={db} currentUser={currentUser} activeBranch={activeBranch} stockRows={activeBranchStockRows} canSell={Boolean(canSell)} executeAction={executeAction} flash={flash} />}
-          {activeView === 'patients' && <PatientsView db={db} activeBranch={activeBranch} flash={flash} />}
+          {activeView === 'patients' && <PatientsView db={db} currentUser={currentUser} activeBranch={activeBranch} executeAction={executeAction} flash={flash} />}
           {activeView === 'issue' && activeBranch && <IssueStock db={db} activeBranch={activeBranch} stockRows={activeBranchStockRows} canWrite={Boolean(canWriteActiveBranch)} executeAction={executeAction} flash={flash} />}
           {activeView === 'adjust' && activeBranch && <Adjustments activeBranch={activeBranch} stockRows={activeBranchStockRows} canAdjust={canAdjust && Boolean(canWriteActiveBranch)} executeAction={executeAction} flash={flash} />}
           {activeView === 'reports' && <Reports db={db} stockRows={dashboardStockRows} stockTotals={dashboardStockTotals} activeBranch={canAdmin ? undefined : activeBranch} />}
@@ -3333,16 +3334,6 @@ function Medicines({
           </div>
         </form>
       </section>
-      {activeBranch && (
-        <PendingMedicationPanel
-          db={db}
-          activeBranch={activeBranch}
-          stockTotals={stockTotals}
-          canManage={canManagePendingMedication(db, currentUser, activeBranch.id)}
-          executeAction={executeAction}
-          flash={flash}
-        />
-      )}
       {requestMedicine && requestBatch && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <section className="modal-panel">
@@ -3591,67 +3582,31 @@ function Medicines({
   )
 }
 
-function PendingMedicationPanel({
+function PendingMedicationRecords({
   db,
   activeBranch,
-  stockTotals,
   canManage,
   executeAction,
   flash,
 }: {
   db: Database
-  activeBranch: Branch
-  stockTotals: Map<string, number>
+  activeBranch?: Branch
   canManage: boolean
   executeAction: ExecuteAction
   flash: (message: string) => void
 }) {
-  const emptyForm = {
-    patientName: '',
-    patientPhone: '',
-    medicineId: '',
-    medicationName: '',
-    genericName: '',
-    strength: '',
-    form: '',
-    quantity: 1,
-    unit: '',
-    sourceNote: '',
-  }
-  const [form, setForm] = useState(emptyForm)
+  const stockRows = useMemo(() => getStockRows(db), [db])
+  const stockTotals = useMemo(() => aggregateMedicineStock(stockRows.filter((row) => !activeBranch || row.batch.branchId === activeBranch.id)), [activeBranch, stockRows])
   const branchRecords = db.pendingMedications
-    .filter((item) => item.branchId === activeBranch.id)
+    .filter((item) => !activeBranch || item.branchId === activeBranch.id)
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   const openCount = branchRecords.filter((item) => item.status === 'pending' || item.status === 'available' || item.status === 'contacted').length
   const availableCount = branchRecords.filter((item) => item.status === 'available').length
-  const selectedMedicine = db.medicines.find((medicine) => medicine.id === form.medicineId)
-
-  function chooseMedicine(medicineId: string) {
-    const medicine = db.medicines.find((item) => item.id === medicineId)
-    setForm((current) => ({
-      ...current,
-      medicineId,
-      medicationName: medicine?.brandName ?? current.medicationName,
-      genericName: medicine?.genericName ?? current.genericName,
-      strength: medicine?.strength ?? current.strength,
-      form: medicine?.form ?? current.form,
-      unit: medicine ? medicineSellableUnit(medicine) : current.unit,
-    }))
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault()
-    if (!canManage) return
-    void executeAction('createPendingMedication', {
-      branchId: activeBranch.id,
-      ...form,
-    }, 'Pending medication saved')
-    setForm(emptyForm)
-  }
+  const contactedCount = branchRecords.filter((item) => item.status === 'contacted').length
 
   function messageFor(item: PendingMedication) {
     const availableLine = item.status === 'available'
-      ? `${item.medicationName} is now available at ${activeBranch.name}. We have ${number.format(item.availableQuantity ?? 0)} ${item.unit || 'unit'} available.`
+      ? `${item.medicationName} is now available at ${getBranchName(db, item.branchId)}. We have ${number.format(item.availableQuantity ?? 0)} ${item.unit || 'unit'} available.`
       : `We are following up on your request for ${item.medicationName}.`
     return patientCareMessage(db.settings.accountName, item.patientName, availableLine)
   }
@@ -3680,94 +3635,63 @@ function PendingMedicationPanel({
     <section className="content-section pending-medication-section full">
       <div className="section-heading">
         <div>
-          <h2>Pending Patient Medication</h2>
-          <p>Remember medicines patients asked for when the pharmacy could not supply them immediately.</p>
+          <h2>Pending Medication</h2>
+          <p>Generated from Prescription lines saved with zero supplied quantity because the medicine was unavailable.</p>
         </div>
         <div className="pending-medication-summary">
           <span><strong>{number.format(openCount)}</strong> open</span>
           <span><strong>{number.format(availableCount)}</strong> available</span>
+          <span><strong>{number.format(contactedCount)}</strong> contacted</span>
         </div>
       </div>
-      <div className="pending-medication-layout">
-        <form className="pending-medication-form form-grid" onSubmit={submit}>
-          <label>Patient name<input required value={form.patientName} onChange={(event) => setForm({ ...form, patientName: event.target.value })} disabled={!canManage} /></label>
-          <label>Phone<input value={form.patientPhone} onChange={(event) => setForm({ ...form, patientPhone: event.target.value })} disabled={!canManage} /></label>
-          <label className="full">
-            Catalog medicine
-            <select value={form.medicineId} onChange={(event) => chooseMedicine(event.target.value)} disabled={!canManage}>
-              <option value="">Not linked to catalog</option>
-              {db.medicines.filter((medicine) => medicine.active).map((medicine) => (
-                <option key={medicine.id} value={medicine.id}>{medicineOptionLabel(medicine)} / stock {medicineStockLabel(medicine, stockTotals.get(medicine.id) ?? 0)}</option>
-              ))}
-            </select>
-          </label>
-          <label>Medication requested<input required value={form.medicationName} onChange={(event) => setForm({ ...form, medicationName: event.target.value })} disabled={!canManage} /></label>
-          <label>Generic<input value={form.genericName} onChange={(event) => setForm({ ...form, genericName: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
-          <label>Strength<input value={form.strength} onChange={(event) => setForm({ ...form, strength: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
-          <label>Form<input value={form.form} onChange={(event) => setForm({ ...form, form: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
-          <label>Quantity<input type="number" min="1" value={numberInputValue(form.quantity)} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} disabled={!canManage} /></label>
-          <label>Unit<input value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
-          <label className="full">Source note<textarea value={form.sourceNote} onChange={(event) => setForm({ ...form, sourceNote: event.target.value })} placeholder="Prescription reference, visit context, or follow-up instruction" rows={3} disabled={!canManage} /></label>
-          {!canManage && <div className="form-error full">Pharmacy Technicians can see pending availability here. Only pharmacists, branch managers, or the permanent admin can record or update patient-facing pending medication.</div>}
-          <div className="form-actions full">
-            <button className="ghost-button" type="button" onClick={() => setForm(emptyForm)} disabled={!canManage}>Clear</button>
-            <button className="primary-button" type="submit" disabled={!canManage}>
-              <ClipboardList size={17} />
-              Remember medication
-            </button>
-          </div>
-        </form>
-
-        <section className="pending-medication-list-panel">
-          <div className="pending-medication-tools">
-            <span>Open follow-ups turn available automatically when matching stock is received.</span>
-          </div>
-          <div className="pending-medication-list">
-            {branchRecords.length ? branchRecords.map((item) => {
-              const medicine = item.medicineId ? db.medicines.find((entry) => entry.id === item.medicineId) : undefined
-              const message = messageFor(item)
-              return (
-                <article className={`pending-medication-card is-${item.status}`} key={item.id}>
-                  <header>
-                    <div>
-                      <strong>{item.medicationName}</strong>
-                      <span>{[item.genericName, item.strength, item.form].filter(Boolean).join(' / ') || 'Medication request'}</span>
-                    </div>
-                    <span className={`pill ${statusClass(item.status)}`}>{pendingMedicationStatusLabels[item.status]}</span>
-                  </header>
-                  <dl>
-                    <div><dt>Patient</dt><dd>{item.patientName}{item.patientPhone ? ` / ${item.patientPhone}` : ''}</dd></div>
-                    <div><dt>Requested</dt><dd>{number.format(item.quantity)} {item.unit || 'unit'} / {new Date(item.requestedAt).toLocaleString()}</dd></div>
-                    <div><dt>Current stock</dt><dd>{medicine ? medicineStockLabel(medicine, stockTotals.get(medicine.id) ?? 0) : 'No catalog link'}</dd></div>
-                    <div><dt>Recorded by</dt><dd>{getUserName(db, item.recordedBy)}</dd></div>
-                  </dl>
-                  {item.sourceNote && <p>{item.sourceNote}</p>}
-                  {item.status === 'available' && (
-                    <div className="form-success">
-                      Available since {new Date(item.availableAt ?? item.updatedAt).toLocaleString()}. Suggested message: {message}
-                    </div>
-                  )}
-                  <footer>
-                    {item.patientPhone && (
-                      <a className="ghost-button" href={whatsappHref(item.patientPhone, message)} target="_blank" rel="noreferrer">
-                        <Smartphone size={15} />
-                        WhatsApp
-                      </a>
-                    )}
-                    <button type="button" onClick={() => void copyMessage(item)}>
-                      <ClipboardList size={15} />
-                      Copy message
-                    </button>
-                    {item.status === 'available' && <button type="button" onClick={() => updateStatus(item, 'contacted')} disabled={!canManage}>Contacted</button>}
-                    {(item.status === 'pending' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'available')} disabled={!canManage}>Mark available</button>}
-                    {(item.status === 'available' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'fulfilled')} disabled={!canManage}>Fulfilled</button>}
-                    {(item.status === 'pending' || item.status === 'available' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'cancelled')} disabled={!canManage}>Cancel</button>}
-                  </footer>
-                </article>
-              )
-            }) : <div className="empty-state">No pending patient medication recorded for {activeBranch.name} yet.</div>}
-          </div>
-        </section>
+      <div className="pending-medication-tools">
+        <span>Records are created automatically from Prescriptions and turn available when matching stock is received.</span>
+      </div>
+      <div className="pending-medication-list">
+        {branchRecords.length ? branchRecords.map((item) => {
+          const medicine = item.medicineId ? db.medicines.find((entry) => entry.id === item.medicineId) : undefined
+          const message = messageFor(item)
+          return (
+            <article className={`pending-medication-card is-${item.status}`} key={item.id}>
+              <header>
+                <div>
+                  <strong>{item.medicationName}</strong>
+                  <span>{[item.genericName, item.strength, item.form].filter(Boolean).join(' / ') || 'Unavailable medication request'}</span>
+                </div>
+                <span className={`pill ${statusClass(item.status)}`}>{pendingMedicationStatusLabels[item.status]}</span>
+              </header>
+              <dl>
+                <div><dt>Patient</dt><dd>{item.patientName}{item.patientPhone ? ` / ${item.patientPhone}` : ''}</dd></div>
+                <div><dt>Branch</dt><dd>{getBranchName(db, item.branchId)}</dd></div>
+                <div><dt>Requested</dt><dd>{number.format(item.quantity)} {item.unit || 'unit'} / {new Date(item.requestedAt).toLocaleString()}</dd></div>
+                <div><dt>Current stock</dt><dd>{medicine ? medicineStockLabel(medicine, stockTotals.get(medicine.id) ?? 0) : 'No catalog link'}</dd></div>
+                <div><dt>Recorded by</dt><dd>{getUserName(db, item.recordedBy)}</dd></div>
+                <div><dt>Source</dt><dd>{item.sourceNote || 'Prescription unavailable item'}</dd></div>
+              </dl>
+              {item.status === 'available' && (
+                <div className="form-success">
+                  Available since {new Date(item.availableAt ?? item.updatedAt).toLocaleString()}. Suggested message: {message}
+                </div>
+              )}
+              <footer>
+                {item.patientPhone && (
+                  <a className="ghost-button" href={whatsappHref(item.patientPhone, message)} target="_blank" rel="noreferrer">
+                    <Smartphone size={15} />
+                    WhatsApp
+                  </a>
+                )}
+                <button type="button" onClick={() => void copyMessage(item)}>
+                  <ClipboardList size={15} />
+                  Copy message
+                </button>
+                {item.status === 'available' && <button type="button" onClick={() => updateStatus(item, 'contacted')} disabled={!canManage}>Contacted</button>}
+                {(item.status === 'pending' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'available')} disabled={!canManage}>Mark available</button>}
+                {(item.status === 'available' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'fulfilled')} disabled={!canManage}>Fulfilled</button>}
+                {(item.status === 'pending' || item.status === 'available' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'cancelled')} disabled={!canManage}>Cancel</button>}
+              </footer>
+            </article>
+          )
+        }) : <div className="empty-state">No pending medication records yet. Unavailable prescription items will appear here automatically.</div>}
       </div>
     </section>
   )
@@ -4486,6 +4410,7 @@ function POSView({
     itemType: 'medicine' | 'product'
     itemId: string
     quantity: number
+    requestedQuantity?: number
     daysSupply?: number
     counselingNote?: string
     labelInstruction?: string
@@ -4508,6 +4433,7 @@ function POSView({
     itemType: item.itemType,
     itemId: item.itemId,
     quantity: item.quantity,
+    requestedQuantity: item.requestedQuantity,
     daysSupply: item.daysSupply,
     counselingNote: item.counselingNote,
     labelInstruction: item.labelInstruction,
@@ -4525,7 +4451,7 @@ function POSView({
   const stockByMedicine = useMemo(() => aggregateMedicineStock(stockRows.filter((row) => row.quantity > 0 && row.daysToExpiry >= 0)), [stockRows])
   const allSaleOptions: SaleOption[] = useMemo(() =>
     db.medicines
-      .filter((medicine) => medicine.active && (stockByMedicine.get(medicine.id) ?? 0) > 0)
+      .filter((medicine) => medicine.active)
       .map((medicine) => {
         const batchPrice = stockRows
           .filter((row) => row.medicine.id === medicine.id && row.quantity > 0 && row.daysToExpiry >= 0)
@@ -4577,10 +4503,11 @@ function POSView({
       ?? makeSaleOption(item.itemType, item.itemId)
     const available = option?.available ?? 0
     const unitPrice = option?.unitPrice ?? 0
-    return { ...item, option, available, unitPrice, lineTotal: item.quantity * unitPrice }
+    return { ...item, option, available, unitPrice, requestedQuantity: item.requestedQuantity ?? item.quantity, lineTotal: item.quantity * unitPrice }
   })
   const subtotal = cartRows.reduce((sum, item) => sum + item.lineTotal, 0)
   const total = subtotal
+  const pendingCartRows = cartRows.filter((item) => item.itemType === 'medicine' && item.available <= 0)
   const filteredSales = branchSales.filter((sale) => {
     const soldDate = sale.soldAt.slice(0, 10)
     return (!historyStartDate || soldDate >= historyStartDate) && (!historyEndDate || soldDate <= historyEndDate)
@@ -4656,34 +4583,30 @@ function POSView({
     setCart((current) => {
       const existing = current.find((item) => item.itemType === itemType && item.itemId === itemId)
       if (existing) {
-        return current.map((item) => item.rowId === existing.rowId ? { ...item, quantity: Math.min(item.quantity + 1, option.available || item.quantity + 1) } : item)
+        return current.map((item) => item.rowId === existing.rowId
+          ? option.available > 0
+            ? { ...item, quantity: Math.min(item.quantity + 1, option.available), requestedQuantity: Math.min((item.requestedQuantity ?? item.quantity) + 1, option.available) }
+            : { ...item, quantity: 0, requestedQuantity: (item.requestedQuantity ?? 1) + 1 }
+          : item)
       }
       return [...current, {
         rowId: id('pos'),
         itemType,
         itemId,
-        quantity: 1,
+        quantity: option.available > 0 ? 1 : 0,
+        requestedQuantity: 1,
         daysSupply: itemType === 'medicine' ? 30 : undefined,
         labelInstruction: defaultLabelInstruction(db, itemType, itemId),
       }]
     })
-    flash(`${option.title} added to prescription basket`)
+    flash(option.available > 0 ? `${option.title} added to prescription basket` : `${option.title} added as pending medication`)
   }
 
   function applyScan() {
     const needle = scan.trim().toLowerCase()
     const option = allSaleOptions.find((item) => item.scanCodes.some((code) => code.toLowerCase() === needle))
     if (!option) {
-      const medicine = findMedicineByScan(db, scan)
-      if (medicine && (stockByMedicine.get(medicine.id) ?? 0) <= 0) {
-        flash(`${medicine.brandName} has no non-expired stock in ${activeBranch.name}`)
-        return
-      }
-      flash('No stocked medicine found for scanned code')
-      return
-    }
-    if (option.available <= 0) {
-      flash(`${option.title} is out of stock`)
+      flash('No medicine found for scanned code')
       return
     }
     addItem(option.itemType, option.itemId)
@@ -4697,7 +4620,7 @@ function POSView({
         .filter((row) => row.medicine.id === option.itemId && row.quantity > 0 && row.daysToExpiry >= 0)
         .sort((a, b) => a.batch.expiryDate.localeCompare(b.batch.expiryDate))[0]
       if (earliest && earliest.daysToExpiry <= db.settings.nearExpiryDays) return 'fefo'
-      if (medicine && option.available <= medicine.reorderLevel) return 'low'
+      if (medicine && option.available > 0 && option.available <= medicine.reorderLevel) return 'low'
     }
     return ''
   }
@@ -4720,10 +4643,13 @@ function POSView({
       if (item.rowId !== rowId) return item
       const option = makeSaleOption(item.itemType, item.itemId)
       const available = option?.available ?? 0
+      const requestedQuantity = Math.max(1, Number(updates.requestedQuantity ?? updates.quantity ?? item.requestedQuantity ?? item.quantity) || 1)
+      const nextQuantity = Math.max(0, Math.min(Number(updates.quantity ?? item.quantity) || 0, available || 0))
       return {
         ...item,
         ...updates,
-        quantity: Math.max(0, Math.min(Number(updates.quantity ?? item.quantity) || 0, available || 0)),
+        quantity: available > 0 ? nextQuantity : 0,
+        requestedQuantity: available > 0 ? Math.max(requestedQuantity, nextQuantity) : requestedQuantity,
       }
     }))
   }
@@ -4756,6 +4682,7 @@ function POSView({
         itemType: item.itemType,
         itemId: item.itemId,
         quantity: item.quantity,
+        requestedQuantity: item.requestedQuantity ?? item.quantity,
         daysSupply: item.daysSupply,
         counselingNote: item.counselingNote,
         labelInstruction: item.labelInstruction,
@@ -4796,6 +4723,7 @@ function POSView({
       itemType: item.itemType,
       itemId: item.itemId,
       quantity: item.quantity,
+      requestedQuantity: item.requestedQuantity,
       daysSupply: item.daysSupply,
       counselingNote: item.counselingNote,
       labelInstruction: item.labelInstruction,
@@ -4810,7 +4738,7 @@ function POSView({
 
   function buildMedicationLabels() {
     return cartRows
-      .filter((item) => item.itemType === 'medicine' && item.option)
+      .filter((item) => item.itemType === 'medicine' && item.option && item.quantity > 0)
       .map((item) => {
         const medicine = db.medicines.find((entry) => entry.id === item.itemId)
         const instruction = item.labelInstruction?.trim() || (medicine ? defaultLabelInstruction(db, 'medicine', medicine.id) : '')
@@ -4876,20 +4804,27 @@ function POSView({
   async function submit(event: FormEvent) {
     event.preventDefault()
     if (!canDispense || !cart.length) return
-    if (cartRows.some((item) => item.quantity < 1)) {
-      flash('Enter a quantity for every medicine item')
+    if (pendingCartRows.length && (!customerName.trim() || !customerPhone.trim())) {
+      flash('Patient name and phone are required for Pending Medication follow-up')
+      return
+    }
+    if (cartRows.some((item) => item.available > 0 && item.quantity < 1)) {
+      flash('Enter a supplied quantity for every available medicine item')
       return
     }
     if (cartRows.some((item) => item.quantity > item.available)) {
       flash('Dispensing blocked: one or more quantities exceed available stock')
       return
     }
-    if (cartRows.some((item) => !item.option || item.unitPrice <= 0)) {
-      flash('Every medicine item needs a saved cost')
+    if (cartRows.some((item) => item.quantity > 0 && (!item.option || item.unitPrice <= 0))) {
+      flash('Every supplied medicine item needs a saved cost')
       return
     }
     const labels = buildMedicationLabels()
-    const completed = await executeAction('recordSale', salePayload(), 'Dispensed and cost captured')
+    const successMessage = cartRows.some((item) => item.quantity > 0)
+      ? pendingCartRows.length ? 'Dispensed available items and saved pending medication' : 'Dispensed and cost captured'
+      : 'Pending medication saved'
+    const completed = await executeAction('recordSale', salePayload(), successMessage)
     if (completed && labels.length) printMedicationLabels(labels)
     if (completed) resetSaleForm()
   }
@@ -5001,7 +4936,7 @@ function POSView({
             <div className="pos-quick-heading">
               <div>
                 <strong>{query.trim() ? 'Search results' : 'Frequently dispensed medicines'}</strong>
-                <span>{query.trim() ? 'Matching stocked medicines' : 'Based on real dispensing history and current stock availability'}</span>
+                <span>{query.trim() ? 'Matching medicines, including unavailable items' : 'Based on real dispensing history and current stock availability'}</span>
               </div>
             </div>
 
@@ -5009,9 +4944,10 @@ function POSView({
               {visibleSaleOptions.map((option) => {
                 const tone = optionTone(option)
                 return (
-                  <button className="pos-catalog-card" type="button" key={`${option.itemType}-${option.itemId}`} onClick={() => addItem(option.itemType, option.itemId)} disabled={!canSell || option.unitPrice <= 0}>
+                  <button className="pos-catalog-card" type="button" key={`${option.itemType}-${option.itemId}`} onClick={() => addItem(option.itemType, option.itemId)} disabled={!canSell || (option.available > 0 && option.unitPrice <= 0)}>
                     <div>
                       <strong>{option.title}</strong>
+                      {option.available <= 0 && <span className="pos-card-tag danger">Pending</span>}
                       {tone === 'fefo' && <span className="pos-card-tag danger"><AlertTriangle size={11} /> FEFO</span>}
                       {tone === 'low' && <span className="pos-card-tag warn">Low</span>}
                     </div>
@@ -5025,7 +4961,7 @@ function POSView({
               })}
               {!visibleSaleOptions.length && (
                 <div className="empty-state">
-                  {query.trim() ? 'No stocked medicines match this search.' : 'No frequently dispensed medicines yet. Use search or scan to record the first medicines.'}
+                  {query.trim() ? 'No medicines match this search.' : 'No frequently dispensed medicines yet. Use search or scan to record the first medicines.'}
                 </div>
               )}
             </div>
@@ -5055,7 +4991,8 @@ function POSView({
                       <div className="pos-line-top">
                         <div>
                           <strong>{item.option?.title ?? 'Unknown item'}</strong>
-                          {item.itemType === 'medicine' && <span className="pos-fefo-chip">FEFO</span>}
+                          {item.itemType === 'medicine' && item.available > 0 && <span className="pos-fefo-chip">FEFO</span>}
+                          {item.itemType === 'medicine' && item.available <= 0 && <span className="pos-card-tag danger">Pending medication</span>}
                           <small>{item.option?.meta ?? 'Unavailable item'} / {number.format(item.available)} avail.</small>
                         </div>
                         <button className="pos-line-remove" type="button" onClick={() => setCart((current) => current.filter((cartItem) => cartItem.rowId !== item.rowId))} title="Remove item" disabled={!canSell}>
@@ -5063,14 +5000,21 @@ function POSView({
                         </button>
                       </div>
                       <div className="pos-line-bottom">
-                        <div className="pos-qty-stepper">
-                          <button type="button" onClick={() => updateCart(item.rowId, { quantity: item.quantity - 1 })} disabled={!canSell || item.quantity <= 1}><Minus size={14} /></button>
-                          <input aria-label="Quantity" type="number" min="1" max={item.available || 1} value={numberInputValue(item.quantity)} onChange={(event) => updateCart(item.rowId, { quantity: Number(event.target.value) })} disabled={!canSell} />
-                          <button type="button" onClick={() => updateCart(item.rowId, { quantity: item.quantity + 1 })} disabled={!canSell || item.quantity >= item.available}><Plus size={14} /></button>
-                        </div>
+                        {item.available > 0 ? (
+                          <div className="pos-qty-stepper">
+                            <button type="button" onClick={() => updateCart(item.rowId, { quantity: item.quantity - 1, requestedQuantity: Math.max(1, item.quantity - 1) })} disabled={!canSell || item.quantity <= 1}><Minus size={14} /></button>
+                            <input aria-label="Supplied quantity" type="number" min="1" max={item.available || 1} value={numberInputValue(item.quantity)} onChange={(event) => updateCart(item.rowId, { quantity: Number(event.target.value), requestedQuantity: Number(event.target.value) })} disabled={!canSell} />
+                            <button type="button" onClick={() => updateCart(item.rowId, { quantity: item.quantity + 1, requestedQuantity: item.quantity + 1 })} disabled={!canSell || item.quantity >= item.available}><Plus size={14} /></button>
+                          </div>
+                        ) : (
+                          <label className="pos-pending-quantity">
+                            <span>Quantity needed</span>
+                            <input aria-label="Pending medication quantity needed" type="number" min="1" value={numberInputValue(item.requestedQuantity ?? 1)} onChange={(event) => updateCart(item.rowId, { requestedQuantity: Number(event.target.value), quantity: 0 })} disabled={!canSell} />
+                          </label>
+                        )}
                         <div>
-                          <small>{money.format(item.unitPrice)} / {number.format(item.available)} avail.</small>
-                          <strong>{money.format(item.lineTotal)}</strong>
+                          <small>{item.available > 0 ? `${money.format(item.unitPrice)} / ${number.format(item.available)} avail.` : '0 supplied / saved to Pending Medication'}</small>
+                          <strong>{item.available > 0 ? money.format(item.lineTotal) : 'Pending'}</strong>
                         </div>
                       </div>
                       {item.itemType === 'medicine' && (
@@ -5166,13 +5110,13 @@ function POSView({
                 </div>
                 <div>
                   <span>Items</span>
-                  <strong>{number.format(cartRows.reduce((sum, item) => sum + item.quantity, 0))}</strong>
+                  <strong>{number.format(cartRows.reduce((sum, item) => sum + (item.available > 0 ? item.quantity : item.requestedQuantity ?? 0), 0))}</strong>
                 </div>
               </section>
             </div>
 
             <div className="pos-action-row">
-              <button type="button" onClick={saveDraft} disabled={!canSell || !cartRows.length || subtotal <= 0}>
+              <button type="button" onClick={saveDraft} disabled={!canSell || !cartRows.length}>
                 <Save size={16} />
                 Draft
               </button>
@@ -5180,7 +5124,7 @@ function POSView({
                 <XCircle size={16} />
                 Clear
               </button>
-              <button className="complete" type="submit" disabled={!canDispense || !cartRows.length || total <= 0} title={canDispense ? 'Dispense medicines' : 'Only assigned pharmacists can dispense'}>
+              <button className="complete" type="submit" disabled={!canDispense || !cartRows.length} title={canDispense ? 'Dispense medicines and save unavailable items' : 'Only assigned pharmacists can dispense'}>
                 <CheckCircle2 size={17} />
                 Dispense
                 <span>Enter</span>
@@ -5284,7 +5228,7 @@ function POSView({
   )
 }
 
-function PatientsView({ db, activeBranch, flash }: { db: Database; activeBranch?: Branch; flash: (message: string) => void }) {
+function PatientsView({ db, currentUser, activeBranch, executeAction, flash }: { db: Database; currentUser: User; activeBranch?: Branch; executeAction: ExecuteAction; flash: (message: string) => void }) {
   const [query, setQuery] = useState('')
   const [selectedKey, setSelectedKey] = useState('')
   const profiles = useMemo(() => buildPatientProfiles(db), [db])
@@ -5458,6 +5402,14 @@ function PatientsView({ db, activeBranch, flash }: { db: Database; activeBranch?
           {!dueRows.length && <div className="empty-state">No refill reminders due in the next 7 days.</div>}
         </div>
       </section>
+
+      <PendingMedicationRecords
+        db={db}
+        activeBranch={activeBranch}
+        canManage={Boolean(activeBranch && canManagePendingMedication(db, currentUser, activeBranch.id))}
+        executeAction={executeAction}
+        flash={flash}
+      />
     </div>
   )
 }

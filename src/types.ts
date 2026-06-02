@@ -184,6 +184,7 @@ export type PosDraft = {
     itemType: 'medicine' | 'product'
     itemId: string
     quantity: number
+    requestedQuantity?: number
     daysSupply?: number
     counselingNote?: string
     labelInstruction?: string

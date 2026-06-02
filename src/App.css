@@ -1165,17 +1165,6 @@ td span,
   padding: 7px 10px;
 }
 
-.pending-medication-layout {
-  display: grid;
-  gap: 16px;
-  grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
-}
-
-.pending-medication-form,
-.pending-medication-list-panel {
-  min-width: 0;
-}
-
 .pending-medication-list {
   display: grid;
   gap: 10px;
@@ -2314,6 +2303,25 @@ td strong {
   padding: 0;
   text-align: center;
   width: 42px;
+}
+
+.pos-pending-quantity {
+  display: grid;
+  gap: 5px;
+  min-width: 148px;
+}
+
+.pos-pending-quantity span {
+  color: #8a5b05;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.pos-pending-quantity input {
+  border: 1px solid #efcf8b;
+  border-radius: 8px;
+  min-height: 34px;
+  padding: 0 10px;
 }
 
 .pos-care-fields {
@@ -4736,7 +4744,6 @@ button:disabled {
 
   .two-column,
   .cart-layout,
-  .pending-medication-layout,
   .pending-medication-tools,
   .requisition-detail-grid,
   .requisition-detail-item,

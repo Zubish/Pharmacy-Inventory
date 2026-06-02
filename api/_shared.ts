@@ -237,6 +237,7 @@ type PosDraft = {
     itemType: 'medicine' | 'product'
     itemId: string
     quantity: number
+    requestedQuantity?: number
     daysSupply?: number
     counselingNote?: string
     labelInstruction?: string
@@ -891,6 +892,7 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
         itemType: item.itemType === 'product' ? 'product' : 'medicine',
         itemId: item.itemId || '',
         quantity: Number(item.quantity) || 0,
+        requestedQuantity: Number(item.requestedQuantity) || undefined,
         daysSupply: Number(item.daysSupply) || undefined,
         counselingNote: item.counselingNote || undefined,
         labelInstruction: item.labelInstruction || undefined,

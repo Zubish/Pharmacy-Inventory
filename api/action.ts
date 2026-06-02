@@ -86,9 +86,6 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
       case 'receiveStock':
         receiveStock(db, actor.id, actor.role, body.payload)
         break
-      case 'createPendingMedication':
-        createPendingMedication(db, actor.id, actor.role, body.payload)
-        break
       case 'updatePendingMedication':
         updatePendingMedication(db, actor.id, actor.role, body.payload)
         break
@@ -457,11 +454,14 @@ function pendingMatchesMedicine(pending: PendingMedication, medicine: Medicine) 
   const requestedGeneric = normalizeSearchText(pending.genericName)
   const form = normalizeSearchText(pending.form)
   const strength = normalizeSearchText(pending.strength)
+  const unit = normalizeSearchText(pending.unit)
   const nameMatches = Boolean(requested && (brand.includes(requested) || requested.includes(brand) || generic.includes(requested) || requested.includes(generic)))
     || Boolean(requestedGeneric && (generic.includes(requestedGeneric) || requestedGeneric.includes(generic)))
   const formMatches = !form || normalizeSearchText(medicine.form).includes(form) || form.includes(normalizeSearchText(medicine.form))
   const strengthMatches = !strength || normalizeSearchText(medicine.strength).includes(strength) || strength.includes(normalizeSearchText(medicine.strength))
-  return nameMatches && formMatches && strengthMatches
+  const sellableUnit = normalizeSearchText(medicine.sellableUnit || medicine.unit || 'unit')
+  const unitMatches = !unit || sellableUnit.includes(unit) || unit.includes(sellableUnit)
+  return nameMatches && formMatches && strengthMatches && unitMatches
 }
 
 function flagPendingMedicationsAvailable(db: Database, actorId: string, branchId: string, medicineIds: string[]) {
@@ -490,48 +490,6 @@ function flagPendingMedicationsAvailable(db: Database, actorId: string, branchId
   }
 }
 
-function createPendingMedication(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
-  const actor = db.users.find((user) => user.id === actorId)
-  if (!actor) throw new Error('Authentication required')
-  const branchId = requireString(payload?.branchId, 'Branch')
-  if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
-  if (!canManagePendingMedication(db, actor, actorRole, branchId)) throw new Error('Only pharmacists, branch managers, or the permanent admin can record pending patient medications')
-  const medicineId = optionalString(payload?.medicineId)
-  const medicine = medicineId ? db.medicines.find((item) => item.id === medicineId) : undefined
-  if (medicineId && !medicine) throw new Error('Medicine not found')
-  const patientName = requireString(payload?.patientName, 'Patient name')
-  const quantity = requireNumber(payload?.quantity, 'Quantity needed')
-  if (quantity <= 0) throw new Error('Quantity needed must be greater than zero')
-  const record: PendingMedication = {
-    id: id('pmed'),
-    branchId,
-    patientName,
-    patientPhone: optionalString(payload?.patientPhone),
-    medicineId: medicine?.id,
-    medicationName: optionalString(payload?.medicationName) || medicine?.brandName || '',
-    genericName: optionalString(payload?.genericName) || medicine?.genericName || '',
-    strength: optionalString(payload?.strength) || medicine?.strength || '',
-    form: optionalString(payload?.form) || medicine?.form || '',
-    quantity,
-    unit: optionalString(payload?.unit) || medicine?.sellableUnit || medicine?.unit || 'unit',
-    sourceNote: optionalString(payload?.sourceNote),
-    status: 'pending',
-    recordedBy: actorId,
-    requestedAt: nowIso(),
-    updatedAt: nowIso(),
-  }
-  if (!record.medicationName && !record.genericName) throw new Error('Medication name or generic name is required')
-  const availableQuantity = medicine ? getMedicineAvailableInBranch(db, medicine.id, branchId) : 0
-  if (availableQuantity > 0) {
-    record.status = 'available'
-    record.availableAt = nowIso()
-    record.availableQuantity = availableQuantity
-    record.updatedAt = record.availableAt
-  }
-  db.pendingMedications.unshift(record)
-  addAudit(db, actorId, 'Recorded pending medication', 'pending-medication', record.id, undefined, record)
-}
-
 function updatePendingMedication(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
   const actor = db.users.find((user) => user.id === actorId)
   if (!actor) throw new Error('Authentication required')
@@ -557,6 +515,60 @@ function updatePendingMedication(db: Database, actorId: string, actorRole: Role,
   if (status === 'fulfilled') pending.fulfilledAt = pending.updatedAt
   if (status === 'cancelled') pending.cancelledAt = pending.updatedAt
   addAudit(db, actorId, `Marked pending medication ${status}`, 'pending-medication', pending.id, before, { ...pending })
+}
+
+function recordPendingMedicationFromPrescription(db: Database, actorId: string, branchId: string, payload: Record<string, unknown> | undefined, item: PosDraft['items'][number]) {
+  if (item.itemType !== 'medicine') return undefined
+  const medicine = db.medicines.find((entry) => entry.id === item.itemId && entry.active)
+  if (!medicine) return undefined
+  const patientName = optionalString(payload?.customerName)
+  const patientPhone = optionalString(payload?.customerPhone)
+  if (!patientName) throw new Error('Patient name is required when saving unavailable medicine to Pending Medication')
+  if (!patientPhone) throw new Error('Patient phone number is required when saving unavailable medicine to Pending Medication')
+  const quantityNeeded = Math.max(1, Number(item.requestedQuantity ?? item.quantity) || 1)
+  const sourceParts = [
+    'Prescription saved with 0 supplied quantity because stock was unavailable.',
+    optionalString(payload?.note) ? `Note: ${optionalString(payload?.note)}` : '',
+    item.labelInstruction ? `Label: ${item.labelInstruction}` : '',
+    item.counselingNote ? `Counselling: ${item.counselingNote}` : '',
+  ].filter(Boolean)
+  const existing = db.pendingMedications.find((pending) => (
+    pending.branchId === branchId
+    && pending.medicineId === medicine.id
+    && (pending.status === 'pending' || pending.status === 'available' || pending.status === 'contacted')
+    && normalizeSearchText(pending.patientName) === normalizeSearchText(patientName)
+    && normalizeSearchText(pending.patientPhone) === normalizeSearchText(patientPhone)
+  ))
+  const now = nowIso()
+  if (existing) {
+    const before = { ...existing }
+    existing.quantity = Math.max(existing.quantity, quantityNeeded)
+    existing.sourceNote = sourceParts.join(' ')
+    existing.updatedAt = now
+    addAudit(db, actorId, 'Updated pending medication from prescription', 'pending-medication', existing.id, before, { ...existing })
+    return existing
+  }
+  const record: PendingMedication = {
+    id: id('pmed'),
+    branchId,
+    patientName,
+    patientPhone,
+    medicineId: medicine.id,
+    medicationName: medicine.brandName,
+    genericName: medicine.genericName,
+    strength: medicine.strength,
+    form: medicine.form,
+    quantity: quantityNeeded,
+    unit: medicine.sellableUnit || medicine.unit || 'unit',
+    sourceNote: sourceParts.join(' '),
+    status: 'pending',
+    recordedBy: actorId,
+    requestedAt: now,
+    updatedAt: now,
+  }
+  db.pendingMedications.unshift(record)
+  addAudit(db, actorId, 'Recorded pending medication from prescription', 'pending-medication', record.id, undefined, record)
+  return record
 }
 
 function upsertMedicine(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
@@ -1170,11 +1182,12 @@ function normalizeDraftItems(payload: unknown): PosDraft['items'] {
       itemType,
       itemId: requireString(input.itemId, 'Medicine'),
       quantity: requireNumber(input.quantity, 'Quantity'),
+      requestedQuantity: Math.max(0, Number(input.requestedQuantity) || Number(input.quantity) || 0) || undefined,
       daysSupply: daysSupply || undefined,
       counselingNote: optionalString(input.counselingNote),
       labelInstruction: optionalString(input.labelInstruction),
     }
-  }).filter((item) => item.quantity > 0)
+  }).filter((item) => item.quantity > 0 || (item.requestedQuantity ?? 0) > 0)
 }
 
 function savePosDraft(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
@@ -1236,10 +1249,13 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
 
   const saleItems: Sale['items'] = []
   const ledgerEntries = []
+  const pendingRecords: PendingMedication[] = []
   for (const input of inputs) {
     const quantity = requireNumber(input.quantity, 'Quantity')
-    if (quantity <= 0) throw new Error('Quantity must be greater than zero')
+    const requestedQuantity = Math.max(quantity, Number(input.requestedQuantity) || 0)
+    if (quantity < 0) throw new Error('Quantity cannot be negative')
     if (input.itemType === 'product') {
+      if (quantity <= 0) throw new Error('Product quantity must be greater than zero')
       const product = db.products.find((item) => item.id === input.itemId && item.active)
       if (!product) throw new Error('Active product not found')
       if (quantity > product.quantity) throw new Error(`${product.name} does not have enough stock`)
@@ -1288,6 +1304,11 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
       .filter((row) => row.quantity > 0 && row.daysToExpiry >= 0)
       .sort((a, b) => a.batch.expiryDate.localeCompare(b.batch.expiryDate))
     const total = rows.reduce((sum, row) => sum + row.quantity, 0)
+    if (quantity <= 0 || total <= 0) {
+      const pending = recordPendingMedicationFromPrescription(db, actorId, branchId, payload, { ...input, requestedQuantity: requestedQuantity || 1, quantity: 0 })
+      if (pending) pendingRecords.push({ ...pending })
+      continue
+    }
     if (quantity > total) throw new Error(`${medicine.brandName} does not have enough non-expired stock in this branch`)
     let remaining = quantity
     for (const row of rows) {
@@ -1323,6 +1344,12 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
       })
       remaining -= take
     }
+  }
+  if (!saleItems.length) {
+    if (!pendingRecords.length) throw new Error('Add at least one supplied or unavailable medicine to the prescription basket')
+    db.posDrafts = db.posDrafts.filter((item) => item.id !== draft?.id)
+    addAudit(db, actorId, `Recorded ${pendingRecords.length} pending medication request${pendingRecords.length === 1 ? '' : 's'} from prescription`, 'pending-medication', pendingRecords[0].id, undefined, pendingRecords)
+    return
   }
   const subtotal = saleItems.reduce((sum, item) => sum + item.lineTotal, 0)
   const requestedDiscount = Math.min(Math.max(0, Number(payload?.discount ?? draft?.discount) || 0), subtotal)
