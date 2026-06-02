@@ -292,6 +292,33 @@ type PosDraft = {
   expiresAt: string
 }
 
+type PendingMedicationStatus = 'pending' | 'available' | 'contacted' | 'fulfilled' | 'cancelled'
+
+type PendingMedication = {
+  id: string
+  branchId: string
+  patientName: string
+  patientPhone: string
+  medicineId?: string
+  medicationName: string
+  genericName: string
+  strength: string
+  form: string
+  quantity: number
+  unit: string
+  sourceNote: string
+  status: PendingMedicationStatus
+  recordedBy: string
+  requestedAt: string
+  updatedAt: string
+  availableAt?: string
+  availableQuantity?: number
+  contactedAt?: string
+  fulfilledAt?: string
+  cancelledAt?: string
+  resolvedBy?: string
+}
+
 type AuditLog = {
   id: string
   userId: string
@@ -444,6 +471,7 @@ type Database = {
   receipts: Receipt[]
   sales: Sale[]
   posDrafts: PosDraft[]
+  pendingMedications: PendingMedication[]
   chatMessages: ChatMessage[]
   auditLogs: AuditLog[]
   passwordResetRequests: PasswordResetRequest[]
@@ -501,7 +529,7 @@ const views: Array<{ id: View; label: string; icon: typeof LayoutDashboard; admi
 const roleLabels: Record<Role, string> = {
   admin: 'Admin',
   pharmacist: 'Pharmacist',
-  inventory: 'Inventory Officer',
+  inventory: 'Pharmacy Technician',
   cashier: 'Cashier',
   viewer: 'Viewer/Auditor',
 }
@@ -527,6 +555,14 @@ const movementLabels: Record<LedgerType, string> = {
   'write-off': 'Write-off',
   'supplier-return': 'Supplier Return',
   'customer-return': 'Staff/patient Return',
+}
+
+const pendingMedicationStatusLabels: Record<PendingMedicationStatus, string> = {
+  pending: 'Pending',
+  available: 'Available',
+  contacted: 'Contacted',
+  fulfilled: 'Fulfilled',
+  cancelled: 'Cancelled',
 }
 
 const movementFilterOptions = [
@@ -825,6 +861,7 @@ function createEmptyDatabase(): Database {
     receipts: [],
     sales: [],
     posDrafts: [],
+    pendingMedications: [],
     chatMessages: [],
     auditLogs: [],
     passwordResetRequests: [],
@@ -1252,6 +1289,12 @@ function canWriteBranch(db: Database, user: User, branchId: string) {
   return isSuperAdmin(db, user) || ((user.role === 'admin' || user.role === 'pharmacist' || user.role === 'inventory') && hasActiveBranchAssignment(user, branchId))
 }
 
+function canManagePendingMedication(db: Database, user: User, branchId: string) {
+  return isSuperAdmin(db, user)
+    || canManageBranch(db, user, branchId)
+    || (user.role === 'pharmacist' && hasActiveBranchAssignment(user, branchId))
+}
+
 function canViewBranch(db: Database, user: User, branchId: string) {
   return isSuperAdmin(db, user) || hasActiveBranchAssignment(user, branchId)
 }
@@ -1384,10 +1427,10 @@ function getQuestSteps(db: Database, currentUser: User): QuestStep[] {
     {
       id: 'pos-open',
       title: 'Run a prescription dispensing test',
-      body: 'Open Prescriptions, search for an in-stock medicine, add it to the basket, then save it as a draft or record dispensing if you are the cashier.',
+      body: 'Open Prescriptions, search for an in-stock medicine, add it to the basket, then save it as a draft or record dispensing if you are the pharmacist.',
       view: 'pos',
       action: 'Open Prescriptions',
-      roles: ['cashier', 'pharmacist'],
+      roles: ['pharmacist'],
     },
     {
       id: 'sales-history',
@@ -1395,7 +1438,7 @@ function getQuestSteps(db: Database, currentUser: User): QuestStep[] {
       body: 'Use the history button on Prescriptions to filter dispensing records by period and print the reconciliation summary for the beta test.',
       view: 'pos',
       action: 'Open dispensing history',
-      roles: ['cashier'],
+      roles: ['pharmacist'],
     },
     {
       id: 'receive-stock',
@@ -1484,6 +1527,11 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
   const releasedRequisitions = relevantRequisitions.filter((request) => request.status === 'released' && canViewBranch(db, currentUser, request.requestingBranchId))
   const handledRequisitions = relevantRequisitions.filter((request) => request.requesterUserId === currentUser.id && request.status !== 'pending')
   const branchAccessRequests = db.branchAccessRequests.filter((request) => request.status === 'pending' && canViewBranch(db, currentUser, request.branchId))
+  const pendingMedicationAlerts = db.pendingMedications.filter((item) => (
+    item.status === 'available'
+    && canViewBranch(db, currentUser, item.branchId)
+    && (isSuperAdmin(db, currentUser) || canManageBranch(db, currentUser, item.branchId) || (currentUser.role === 'pharmacist' && hasActiveBranchAssignment(currentUser, item.branchId)))
+  ))
   const scopedMedicineIds = new Set(stockRows.map((row) => row.medicine.id))
   const expired = stockRows.filter((row) => row.quantity > 0 && row.status === 'expired')
   const nearExpiry = stockRows.filter((row) => row.quantity > 0 && row.status === 'near-expiry')
@@ -1555,6 +1603,18 @@ function buildNotifications(db: Database, stockRows: StockRow[], stockTotals: Ma
       branchId: request.branchId,
       requiredPermission: 'manage-branch',
       createdAt: request.requestedAt,
+    })
+  })
+
+  pendingMedicationAlerts.forEach((item) => {
+    notifications.push({
+      id: `pending-medication-${item.id}`,
+      tone: 'good',
+      title: `${item.medicationName || item.genericName} is now available`,
+      detail: `${item.patientName}${item.patientPhone ? ` / ${item.patientPhone}` : ''} is waiting for ${number.format(item.quantity)} ${item.unit}.`,
+      view: 'medicines',
+      branchId: item.branchId,
+      createdAt: item.availableAt ?? item.updatedAt,
     })
   })
 
@@ -1654,7 +1714,7 @@ function App() {
   const activeBranchStockRows = useMemo(() => activeBranch ? stockRows.filter((row) => row.batch.branchId === activeBranch.id) : stockRows, [activeBranch, stockRows])
   const permittedStockRows = useMemo(() => currentUser ? stockRows.filter((row) => canViewBranch(db, currentUser, row.batch.branchId)) : [], [currentUser, db, stockRows])
   const canWrite = currentUser ? currentUser.role === 'admin' || currentUser.role === 'pharmacist' || currentUser.role === 'inventory' : false
-  const canSell = currentUser && activeBranch ? isSuperAdmin(db, currentUser) || canManageBranch(db, currentUser, activeBranch.id) || ((currentUser.role === 'pharmacist' || currentUser.role === 'cashier') && hasActiveBranchAssignment(currentUser, activeBranch.id)) : false
+  const canSell = currentUser && activeBranch ? isSuperAdmin(db, currentUser) || canManageBranch(db, currentUser, activeBranch.id) || (currentUser.role === 'pharmacist' && hasActiveBranchAssignment(currentUser, activeBranch.id)) : false
   const canManagePrices = currentUser && activeBranch ? isSuperAdmin(db, currentUser) || canManageBranch(db, currentUser, activeBranch.id) || (currentUser.role === 'inventory' && hasActiveBranchAssignment(currentUser, activeBranch.id)) : false
   const canAdjust = currentUser ? currentUser.role === 'admin' || currentUser.role === 'pharmacist' : false
   const canAdmin = isSuperAdmin(db, currentUser)
@@ -3273,6 +3333,16 @@ function Medicines({
           </div>
         </form>
       </section>
+      {activeBranch && (
+        <PendingMedicationPanel
+          db={db}
+          activeBranch={activeBranch}
+          stockTotals={stockTotals}
+          canManage={canManagePendingMedication(db, currentUser, activeBranch.id)}
+          executeAction={executeAction}
+          flash={flash}
+        />
+      )}
       {requestMedicine && requestBatch && (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <section className="modal-panel">
@@ -3518,6 +3588,188 @@ function Medicines({
         </div>
       )}
     </div>
+  )
+}
+
+function PendingMedicationPanel({
+  db,
+  activeBranch,
+  stockTotals,
+  canManage,
+  executeAction,
+  flash,
+}: {
+  db: Database
+  activeBranch: Branch
+  stockTotals: Map<string, number>
+  canManage: boolean
+  executeAction: ExecuteAction
+  flash: (message: string) => void
+}) {
+  const emptyForm = {
+    patientName: '',
+    patientPhone: '',
+    medicineId: '',
+    medicationName: '',
+    genericName: '',
+    strength: '',
+    form: '',
+    quantity: 1,
+    unit: '',
+    sourceNote: '',
+  }
+  const [form, setForm] = useState(emptyForm)
+  const branchRecords = db.pendingMedications
+    .filter((item) => item.branchId === activeBranch.id)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  const openCount = branchRecords.filter((item) => item.status === 'pending' || item.status === 'available' || item.status === 'contacted').length
+  const availableCount = branchRecords.filter((item) => item.status === 'available').length
+  const selectedMedicine = db.medicines.find((medicine) => medicine.id === form.medicineId)
+
+  function chooseMedicine(medicineId: string) {
+    const medicine = db.medicines.find((item) => item.id === medicineId)
+    setForm((current) => ({
+      ...current,
+      medicineId,
+      medicationName: medicine?.brandName ?? current.medicationName,
+      genericName: medicine?.genericName ?? current.genericName,
+      strength: medicine?.strength ?? current.strength,
+      form: medicine?.form ?? current.form,
+      unit: medicine ? medicineSellableUnit(medicine) : current.unit,
+    }))
+  }
+
+  function submit(event: FormEvent) {
+    event.preventDefault()
+    if (!canManage) return
+    void executeAction('createPendingMedication', {
+      branchId: activeBranch.id,
+      ...form,
+    }, 'Pending medication saved')
+    setForm(emptyForm)
+  }
+
+  function messageFor(item: PendingMedication) {
+    const availableLine = item.status === 'available'
+      ? `${item.medicationName} is now available at ${activeBranch.name}. We have ${number.format(item.availableQuantity ?? 0)} ${item.unit || 'unit'} available.`
+      : `We are following up on your request for ${item.medicationName}.`
+    return patientCareMessage(db.settings.accountName, item.patientName, availableLine)
+  }
+
+  async function copyMessage(item: PendingMedication) {
+    const message = messageFor(item)
+    await navigator.clipboard?.writeText(message)
+    flash('Patient follow-up message copied')
+  }
+
+  function updateStatus(item: PendingMedication, status: PendingMedicationStatus) {
+    if (status === 'fulfilled' && !window.confirm('Mark this request fulfilled? Actual dispensing should still be recorded in Prescriptions so stock deduction remains accurate.')) return
+    if (status === 'cancelled' && !window.confirm('Cancel this pending medication request?')) return
+    void executeAction('updatePendingMedication', { pendingMedicationId: item.id, status }, `Pending medication marked ${pendingMedicationStatusLabels[status].toLowerCase()}`)
+  }
+
+  function statusClass(status: PendingMedicationStatus) {
+    if (status === 'available') return 'good'
+    if (status === 'fulfilled') return 'active'
+    if (status === 'cancelled') return 'expired'
+    if (status === 'contacted') return 'warning'
+    return 'muted'
+  }
+
+  return (
+    <section className="content-section pending-medication-section full">
+      <div className="section-heading">
+        <div>
+          <h2>Pending Patient Medication</h2>
+          <p>Remember medicines patients asked for when the pharmacy could not supply them immediately.</p>
+        </div>
+        <div className="pending-medication-summary">
+          <span><strong>{number.format(openCount)}</strong> open</span>
+          <span><strong>{number.format(availableCount)}</strong> available</span>
+        </div>
+      </div>
+      <div className="pending-medication-layout">
+        <form className="pending-medication-form form-grid" onSubmit={submit}>
+          <label>Patient name<input required value={form.patientName} onChange={(event) => setForm({ ...form, patientName: event.target.value })} disabled={!canManage} /></label>
+          <label>Phone<input value={form.patientPhone} onChange={(event) => setForm({ ...form, patientPhone: event.target.value })} disabled={!canManage} /></label>
+          <label className="full">
+            Catalog medicine
+            <select value={form.medicineId} onChange={(event) => chooseMedicine(event.target.value)} disabled={!canManage}>
+              <option value="">Not linked to catalog</option>
+              {db.medicines.filter((medicine) => medicine.active).map((medicine) => (
+                <option key={medicine.id} value={medicine.id}>{medicineOptionLabel(medicine)} / stock {medicineStockLabel(medicine, stockTotals.get(medicine.id) ?? 0)}</option>
+              ))}
+            </select>
+          </label>
+          <label>Medication requested<input required value={form.medicationName} onChange={(event) => setForm({ ...form, medicationName: event.target.value })} disabled={!canManage} /></label>
+          <label>Generic<input value={form.genericName} onChange={(event) => setForm({ ...form, genericName: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
+          <label>Strength<input value={form.strength} onChange={(event) => setForm({ ...form, strength: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
+          <label>Form<input value={form.form} onChange={(event) => setForm({ ...form, form: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
+          <label>Quantity<input type="number" min="1" value={numberInputValue(form.quantity)} onChange={(event) => setForm({ ...form, quantity: Number(event.target.value) })} disabled={!canManage} /></label>
+          <label>Unit<input value={form.unit} onChange={(event) => setForm({ ...form, unit: event.target.value })} disabled={!canManage || Boolean(selectedMedicine)} /></label>
+          <label className="full">Source note<textarea value={form.sourceNote} onChange={(event) => setForm({ ...form, sourceNote: event.target.value })} placeholder="Prescription reference, visit context, or follow-up instruction" rows={3} disabled={!canManage} /></label>
+          {!canManage && <div className="form-error full">Pharmacy Technicians can see pending availability here. Only pharmacists, branch managers, or the permanent admin can record or update patient-facing pending medication.</div>}
+          <div className="form-actions full">
+            <button className="ghost-button" type="button" onClick={() => setForm(emptyForm)} disabled={!canManage}>Clear</button>
+            <button className="primary-button" type="submit" disabled={!canManage}>
+              <ClipboardList size={17} />
+              Remember medication
+            </button>
+          </div>
+        </form>
+
+        <section className="pending-medication-list-panel">
+          <div className="pending-medication-tools">
+            <span>Open follow-ups turn available automatically when matching stock is received.</span>
+          </div>
+          <div className="pending-medication-list">
+            {branchRecords.length ? branchRecords.map((item) => {
+              const medicine = item.medicineId ? db.medicines.find((entry) => entry.id === item.medicineId) : undefined
+              const message = messageFor(item)
+              return (
+                <article className={`pending-medication-card is-${item.status}`} key={item.id}>
+                  <header>
+                    <div>
+                      <strong>{item.medicationName}</strong>
+                      <span>{[item.genericName, item.strength, item.form].filter(Boolean).join(' / ') || 'Medication request'}</span>
+                    </div>
+                    <span className={`pill ${statusClass(item.status)}`}>{pendingMedicationStatusLabels[item.status]}</span>
+                  </header>
+                  <dl>
+                    <div><dt>Patient</dt><dd>{item.patientName}{item.patientPhone ? ` / ${item.patientPhone}` : ''}</dd></div>
+                    <div><dt>Requested</dt><dd>{number.format(item.quantity)} {item.unit || 'unit'} / {new Date(item.requestedAt).toLocaleString()}</dd></div>
+                    <div><dt>Current stock</dt><dd>{medicine ? medicineStockLabel(medicine, stockTotals.get(medicine.id) ?? 0) : 'No catalog link'}</dd></div>
+                    <div><dt>Recorded by</dt><dd>{getUserName(db, item.recordedBy)}</dd></div>
+                  </dl>
+                  {item.sourceNote && <p>{item.sourceNote}</p>}
+                  {item.status === 'available' && (
+                    <div className="form-success">
+                      Available since {new Date(item.availableAt ?? item.updatedAt).toLocaleString()}. Suggested message: {message}
+                    </div>
+                  )}
+                  <footer>
+                    {item.patientPhone && (
+                      <a className="ghost-button" href={whatsappHref(item.patientPhone, message)} target="_blank" rel="noreferrer">
+                        <Smartphone size={15} />
+                        WhatsApp
+                      </a>
+                    )}
+                    <button type="button" onClick={() => void copyMessage(item)}>
+                      <ClipboardList size={15} />
+                      Copy message
+                    </button>
+                    {item.status === 'available' && <button type="button" onClick={() => updateStatus(item, 'contacted')} disabled={!canManage}>Contacted</button>}
+                    {(item.status === 'pending' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'available')} disabled={!canManage}>Mark available</button>}
+                    {(item.status === 'available' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'fulfilled')} disabled={!canManage}>Fulfilled</button>}
+                    {(item.status === 'pending' || item.status === 'available' || item.status === 'contacted') && <button type="button" onClick={() => updateStatus(item, 'cancelled')} disabled={!canManage}>Cancel</button>}
+                  </footer>
+                </article>
+              )
+            }) : <div className="empty-state">No pending patient medication recorded for {activeBranch.name} yet.</div>}
+          </div>
+        </section>
+      </div>
+    </section>
   )
 }
 
@@ -4339,7 +4591,7 @@ function POSView({
   const branchDrafts = db.posDrafts
     .filter((draft) => draft.branchId === activeBranch.id && draft.expiresAt > new Date().toISOString())
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-  const canDispense = currentUser.role === 'cashier'
+  const canDispense = currentUser.role === 'pharmacist' && hasActiveBranchAssignment(currentUser, activeBranch.id)
   const patientProfiles = useMemo(() => buildPatientProfiles(db), [db])
   const selectedPatient = useMemo(() => {
     const phone = normalizePhone(customerPhone)
@@ -4717,7 +4969,7 @@ function POSView({
           </div>
         </div>
 
-        {!canSell && <div className="form-error pos-access-error">You need cashier, pharmacist, site manager, or admin access in {activeBranch.name} to use Prescriptions.</div>}
+        {!canSell && <div className="form-error pos-access-error">You need pharmacist, site manager, or admin access in {activeBranch.name} to use Prescriptions.</div>}
 
         <form className="pos-terminal-grid" onSubmit={submit}>
           <section className="pos-catalog-panel">
@@ -4928,14 +5180,14 @@ function POSView({
                 <XCircle size={16} />
                 Clear
               </button>
-              <button className="complete" type="submit" disabled={!canDispense || !cartRows.length || total <= 0} title={canDispense ? 'Dispense medicines' : 'Only assigned dispensing staff can dispense'}>
+              <button className="complete" type="submit" disabled={!canDispense || !cartRows.length || total <= 0} title={canDispense ? 'Dispense medicines' : 'Only assigned pharmacists can dispense'}>
                 <CheckCircle2 size={17} />
                 Dispense
                 <span>Enter</span>
               </button>
             </div>
             {canSell && !canDispense && (
-              <div className="pos-cashier-note">Only assigned dispensing staff can dispense. Save as a draft for handoff.</div>
+              <div className="pos-cashier-note">Only assigned pharmacists can dispense. Save as a draft for handoff.</div>
             )}
           </aside>
         </form>
@@ -5773,10 +6025,10 @@ const guideCards: GuideCard[] = [
   {
     id: 'pos',
     title: 'Record medicine dispensing',
-    summary: 'Cashiers and pharmacists can find in-stock medicines, add them to the prescription basket, track cost, and print reconciliation history.',
+    summary: 'Pharmacists can find in-stock medicines, add them to the prescription basket, track cost, and print reconciliation history.',
     view: 'pos',
     shot: 'pos',
-    roles: ['cashier', 'pharmacist'],
+    roles: ['pharmacist'],
     steps: ['Open Prescriptions.', 'Search by medicine name, SKU, barcode, or use frequently used medicines.', 'Add medicines to the basket and enter staff/patient details.', 'Save a draft or dispense if you are assigned to that role.'],
   },
   {
@@ -6055,6 +6307,7 @@ function Audit({ db }: { db: Database }) {
 function UserManagement({ db, currentUser, executeAction, flash }: { db: Database; currentUser: User; executeAction: ExecuteAction; flash: (message: string) => void }) {
   const primaryAdminId = getPrimaryAdminId(db)
   const securityEvents = db.securityEvents.slice(0, 50)
+  const assignableRoleEntries = Object.entries(roleLabels).filter(([role]) => role === 'admin' || role === 'pharmacist' || role === 'inventory' || role === 'viewer')
 
   function updateUser(userId: string, updates: Partial<Pick<User, 'role' | 'status'>>) {
     const target = db.users.find((user) => user.id === userId)
@@ -6099,7 +6352,7 @@ function UserManagement({ db, currentUser, executeAction, flash }: { db: Databas
                   <td>{user.phone || '-'}</td>
                   <td>
                     <select value={user.role} onChange={(event) => updateUser(user.id, { role: event.target.value as Role })} disabled={user.id === currentUser.id || user.id === primaryAdminId}>
-                      {Object.entries(roleLabels).map(([role, label]) => <option key={role} value={role}>{label}</option>)}
+                      {assignableRoleEntries.map(([role, label]) => <option key={role} value={role}>{label}</option>)}
                     </select>
                   </td>
                   <td>
@@ -6458,7 +6711,7 @@ function SettingsView({ db, canAdmin, executeAction }: { db: Database; canAdmin:
           <div className="pricing-settings-grid">
             <label>Global markup %<input type="number" min="0" value={numberInputValue(form.globalMarkupPercent ?? 30)} onChange={(event) => setForm({ ...form, globalMarkupPercent: Number(event.target.value) })} disabled={!canAdmin} /></label>
             <label>Round prices<select value={form.pricingRoundingRule ?? 10} onChange={(event) => setForm({ ...form, pricingRoundingRule: Number(event.target.value) as PricingRoundingRule })} disabled={!canAdmin}>{pricingRoundingRules.map((rule) => <option key={rule} value={rule}>{rule ? `Nearest ${money.format(rule)}` : 'No rounding'}</option>)}</select></label>
-            <label>Cashier discount limit %<input type="number" min="0" max="100" value={numberInputValue(form.cashierDiscountLimitPercent ?? 5)} onChange={(event) => setForm({ ...form, cashierDiscountLimitPercent: Number(event.target.value) })} disabled={!canAdmin} /></label>
+            <label>Dispensing discount limit %<input type="number" min="0" max="100" value={numberInputValue(form.cashierDiscountLimitPercent ?? 5)} onChange={(event) => setForm({ ...form, cashierDiscountLimitPercent: Number(event.target.value) })} disabled={!canAdmin} /></label>
             <label>Manager discount limit %<input type="number" min="0" max="100" value={numberInputValue(form.managerDiscountLimitPercent ?? 10)} onChange={(event) => setForm({ ...form, managerDiscountLimitPercent: Number(event.target.value) })} disabled={!canAdmin} /></label>
             <label>Unusual markup warning %<input type="number" min="0" value={numberInputValue(form.unusualMarkupPercent ?? 80)} onChange={(event) => setForm({ ...form, unusualMarkupPercent: Number(event.target.value) })} disabled={!canAdmin} /></label>
             <label>Cost-change warning %<input type="number" min="0" value={numberInputValue(form.costChangeWarningPercent ?? 30)} onChange={(event) => setForm({ ...form, costChangeWarningPercent: Number(event.target.value) })} disabled={!canAdmin} /></label>

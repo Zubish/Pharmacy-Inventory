@@ -23,7 +23,7 @@ import {
   sendSecurityEmail,
   today,
 } from './_shared.js'
-import type { Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, PosDraft, Product, Role, Sale, Supplier, User } from './_shared.js'
+import type { Database, HandlerRequest, HandlerResponse, LedgerType, Medicine, PendingMedication, PendingMedicationStatus, PosDraft, Product, Role, Sale, Supplier, User } from './_shared.js'
 import type { Branch } from './_shared.js'
 
 type ActionBody = {
@@ -85,6 +85,12 @@ export default async function handler(req: HandlerRequest, res: HandlerResponse)
         break
       case 'receiveStock':
         receiveStock(db, actor.id, actor.role, body.payload)
+        break
+      case 'createPendingMedication':
+        createPendingMedication(db, actor.id, actor.role, body.payload)
+        break
+      case 'updatePendingMedication':
+        updatePendingMedication(db, actor.id, actor.role, body.payload)
         break
       case 'createRequisition':
         createRequisition(db, actor.id, body.payload)
@@ -286,6 +292,9 @@ function updateUser(db: Database, actorId: string, payload: Record<string, unkno
   const target = db.users.find((user) => user.id === userId)
   if (!target) throw new Error('User not found')
   const updates = (payload?.updates ?? {}) as Partial<{ role: Role; status: 'pending' | 'active' | 'suspended' }>
+  if (updates.role && !['admin', 'pharmacist', 'inventory', 'viewer'].includes(updates.role)) {
+    throw new Error('Pharmacy Inventory staff roles are Pharmacist, Pharmacy Technician, or Viewer/Auditor; admin access is reserved for account administration')
+  }
   if (target.id === primaryAdminId && ((updates.status && updates.status !== 'active') || (updates.role && updates.role !== 'admin'))) {
     throw new Error('The permanent account admin cannot be downgraded or suspended')
   }
@@ -419,6 +428,137 @@ function canManageMedicinePrices(db: Database, actor: User, actorRole: Role, bra
   return actorRole === 'inventory' && branchId ? hasActiveBranchAssignment(actor, branchId) : false
 }
 
+function canManagePendingMedication(db: Database, actor: User, actorRole: Role, branchId: string) {
+  const effectiveActor = { ...actor, role: actorRole }
+  return canAdmin(effectiveActor, getPrimaryAdminId(db))
+    || canManageBranch(effectiveActor, branchId, getPrimaryAdminId(db))
+    || (actorRole === 'pharmacist' && hasActiveBranchAssignment(effectiveActor, branchId))
+}
+
+function normalizePendingStatus(value: unknown): PendingMedicationStatus {
+  return value === 'available' || value === 'contacted' || value === 'fulfilled' || value === 'cancelled' ? value : 'pending'
+}
+
+function normalizeSearchText(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function getMedicineAvailableInBranch(db: Database, medicineId: string, branchId: string) {
+  return db.batches
+    .filter((batch) => batch.branchId === branchId && batch.medicineId === medicineId && daysUntil(batch.expiryDate) >= 0)
+    .reduce((sum, batch) => sum + Math.max(0, getBatchAvailable(db, batch.id)), 0)
+}
+
+function pendingMatchesMedicine(pending: PendingMedication, medicine: Medicine) {
+  if (pending.medicineId && pending.medicineId === medicine.id) return true
+  const brand = normalizeSearchText(medicine.brandName)
+  const generic = normalizeSearchText(medicine.genericName)
+  const requested = normalizeSearchText(pending.medicationName)
+  const requestedGeneric = normalizeSearchText(pending.genericName)
+  const form = normalizeSearchText(pending.form)
+  const strength = normalizeSearchText(pending.strength)
+  const nameMatches = Boolean(requested && (brand.includes(requested) || requested.includes(brand) || generic.includes(requested) || requested.includes(generic)))
+    || Boolean(requestedGeneric && (generic.includes(requestedGeneric) || requestedGeneric.includes(generic)))
+  const formMatches = !form || normalizeSearchText(medicine.form).includes(form) || form.includes(normalizeSearchText(medicine.form))
+  const strengthMatches = !strength || normalizeSearchText(medicine.strength).includes(strength) || strength.includes(normalizeSearchText(medicine.strength))
+  return nameMatches && formMatches && strengthMatches
+}
+
+function flagPendingMedicationsAvailable(db: Database, actorId: string, branchId: string, medicineIds: string[]) {
+  const medicines = medicineIds
+    .map((medicineId) => db.medicines.find((medicine) => medicine.id === medicineId))
+    .filter((medicine): medicine is Medicine => Boolean(medicine))
+  if (!medicines.length) return
+  const updated: PendingMedication[] = []
+  db.pendingMedications.forEach((pending) => {
+    if (pending.branchId !== branchId || pending.status !== 'pending') return
+    const medicine = medicines.find((item) => pendingMatchesMedicine(pending, item))
+    if (!medicine) return
+    const availableQuantity = getMedicineAvailableInBranch(db, medicine.id, branchId)
+    if (availableQuantity <= 0) return
+    const before = { ...pending }
+    pending.medicineId = pending.medicineId || medicine.id
+    pending.status = 'available'
+    pending.availableAt = nowIso()
+    pending.updatedAt = pending.availableAt
+    pending.availableQuantity = availableQuantity
+    updated.push({ ...pending })
+    addAudit(db, actorId, `Flagged pending medication available for ${pending.patientName}`, 'pending-medication', pending.id, before, { ...pending })
+  })
+  if (updated.length) {
+    addAudit(db, actorId, `Matched ${updated.length} pending medication request${updated.length === 1 ? '' : 's'} after stock receipt`, 'pending-medication', updated[0].id, undefined, updated)
+  }
+}
+
+function createPendingMedication(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
+  const actor = db.users.find((user) => user.id === actorId)
+  if (!actor) throw new Error('Authentication required')
+  const branchId = requireString(payload?.branchId, 'Branch')
+  if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
+  if (!canManagePendingMedication(db, actor, actorRole, branchId)) throw new Error('Only pharmacists, branch managers, or the permanent admin can record pending patient medications')
+  const medicineId = optionalString(payload?.medicineId)
+  const medicine = medicineId ? db.medicines.find((item) => item.id === medicineId) : undefined
+  if (medicineId && !medicine) throw new Error('Medicine not found')
+  const patientName = requireString(payload?.patientName, 'Patient name')
+  const quantity = requireNumber(payload?.quantity, 'Quantity needed')
+  if (quantity <= 0) throw new Error('Quantity needed must be greater than zero')
+  const record: PendingMedication = {
+    id: id('pmed'),
+    branchId,
+    patientName,
+    patientPhone: optionalString(payload?.patientPhone),
+    medicineId: medicine?.id,
+    medicationName: optionalString(payload?.medicationName) || medicine?.brandName || '',
+    genericName: optionalString(payload?.genericName) || medicine?.genericName || '',
+    strength: optionalString(payload?.strength) || medicine?.strength || '',
+    form: optionalString(payload?.form) || medicine?.form || '',
+    quantity,
+    unit: optionalString(payload?.unit) || medicine?.sellableUnit || medicine?.unit || 'unit',
+    sourceNote: optionalString(payload?.sourceNote),
+    status: 'pending',
+    recordedBy: actorId,
+    requestedAt: nowIso(),
+    updatedAt: nowIso(),
+  }
+  if (!record.medicationName && !record.genericName) throw new Error('Medication name or generic name is required')
+  const availableQuantity = medicine ? getMedicineAvailableInBranch(db, medicine.id, branchId) : 0
+  if (availableQuantity > 0) {
+    record.status = 'available'
+    record.availableAt = nowIso()
+    record.availableQuantity = availableQuantity
+    record.updatedAt = record.availableAt
+  }
+  db.pendingMedications.unshift(record)
+  addAudit(db, actorId, 'Recorded pending medication', 'pending-medication', record.id, undefined, record)
+}
+
+function updatePendingMedication(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
+  const actor = db.users.find((user) => user.id === actorId)
+  if (!actor) throw new Error('Authentication required')
+  const pendingId = requireString(payload?.pendingMedicationId, 'Pending medication')
+  const pending = db.pendingMedications.find((item) => item.id === pendingId)
+  if (!pending) throw new Error('Pending medication not found')
+  if (!canManagePendingMedication(db, actor, actorRole, pending.branchId)) throw new Error('Only pharmacists, branch managers, or the permanent admin can update pending patient medications')
+  const status = normalizePendingStatus(payload?.status)
+  const before = { ...pending }
+  pending.status = status
+  pending.updatedAt = nowIso()
+  pending.resolvedBy = actorId
+  if (status === 'pending') {
+    pending.availableAt = undefined
+    pending.availableQuantity = undefined
+    pending.contactedAt = undefined
+    pending.fulfilledAt = undefined
+    pending.cancelledAt = undefined
+    pending.resolvedBy = undefined
+  }
+  if (status === 'available') pending.availableAt = pending.availableAt || pending.updatedAt
+  if (status === 'contacted') pending.contactedAt = pending.updatedAt
+  if (status === 'fulfilled') pending.fulfilledAt = pending.updatedAt
+  if (status === 'cancelled') pending.cancelledAt = pending.updatedAt
+  addAudit(db, actorId, `Marked pending medication ${status}`, 'pending-medication', pending.id, before, { ...pending })
+}
+
 function upsertMedicine(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
   const actor = db.users.find((user) => user.id === actorId)
   if (!actor || !canWrite({ ...actor, role: actorRole })) throw new Error('You do not have permission to save medicines')
@@ -507,7 +647,7 @@ function medicineDuplicateKey(medicine: Medicine) {
 
 function upsertProduct(db: Database, actorId: string, actorRole: Role, payload: Record<string, unknown> | undefined) {
   const actor = db.users.find((user) => user.id === actorId)
-  const productManager = actor && (canWrite({ ...actor, role: actorRole }) || actorRole === 'cashier' || canManageBranch(actor, actor.branchIds[0] || actor.managedBranchIds[0] || '', getPrimaryAdminId(db)))
+  const productManager = actor && (canWrite({ ...actor, role: actorRole }) || canManageBranch(actor, actor.branchIds[0] || actor.managedBranchIds[0] || '', getPrimaryAdminId(db)))
   if (!actor || !productManager) throw new Error('You do not have permission to save products')
   const input = (payload?.record ?? {}) as Partial<Product>
   const costPrice = Number(input.costPrice) || 0
@@ -571,7 +711,7 @@ function upsertBranch(db: Database, actorId: string, actorRole: Role, payload: R
     if (managerUserId === primaryAdminId) throw new Error('The permanent admin remains global and should not be assigned as a branch manager')
     const manager = db.users.find((user) => user.id === managerUserId && user.status === 'active')
     if (!manager) throw new Error('Manager user not found')
-    if (manager.role === 'viewer' || manager.role === 'cashier') throw new Error('Cashiers and viewers cannot be branch managers')
+    if (manager.role === 'viewer' || manager.role === 'cashier') throw new Error('Only admins, pharmacists, or Pharmacy Technicians can be branch managers')
   }
   const record: Branch = {
     id: input.id || id('br'),
@@ -651,6 +791,7 @@ function receiveStock(db: Database, actorId: string, actorRole: Role, payload: R
   }
   const batches = []
   const ledgerEntries = []
+  const receivedMedicineIds = new Set<string>()
   for (const input of inputs) {
     const itemType = input.itemType === 'product' ? 'product' : 'medicine'
     if (itemType === 'product') {
@@ -711,6 +852,7 @@ function receiveStock(db: Database, actorId: string, actorRole: Role, payload: R
     const medicineId = requireString(input.medicineId || input.itemId, 'Medicine')
     const medicine = db.medicines.find((item) => item.id === medicineId)
     if (!medicine) throw new Error('Medicine not found')
+    receivedMedicineIds.add(medicineId)
     const containerQuantity = requireNumber(input.quantity, 'Container quantity')
     if (containerQuantity <= 0) throw new Error('Container quantity must be greater than zero')
     const unitsPerContainer = Math.max(1, Number(medicine.packSize) || 1)
@@ -760,6 +902,7 @@ function receiveStock(db: Database, actorId: string, actorRole: Role, payload: R
   db.batches.unshift(...batches)
   db.ledger.unshift(...ledgerEntries)
   db.receipts.unshift(receipt)
+  flagPendingMedicationsAvailable(db, actorId, branchId, Array.from(receivedMedicineIds))
   addAudit(db, actorId, `Received ${receipt.items.length} stock line${receipt.items.length > 1 ? 's' : ''}`, 'receipt', receipt.id, undefined, receipt)
 }
 
@@ -989,11 +1132,11 @@ function issueStock(db: Database, actorId: string, actorRole: Role, payload: Rec
 }
 
 function canSellInBranch(db: Database, actor: User, branchId: string) {
-  return canAdmin(actor, getPrimaryAdminId(db)) || canManageBranch(actor, branchId, getPrimaryAdminId(db)) || ((actor.role === 'pharmacist' || actor.role === 'cashier') && hasActiveBranchAssignment(actor, branchId))
+  return canAdmin(actor, getPrimaryAdminId(db)) || canManageBranch(actor, branchId, getPrimaryAdminId(db)) || (actor.role === 'pharmacist' && hasActiveBranchAssignment(actor, branchId))
 }
 
 function canCompleteSaleInBranch(actor: User, branchId: string) {
-  return actor.role === 'cashier' && hasActiveBranchAssignment(actor, branchId)
+  return actor.role === 'pharmacist' && hasActiveBranchAssignment(actor, branchId)
 }
 
 function receiptReference() {
@@ -1083,7 +1226,7 @@ function recordSale(db: Database, actorId: string, actorRole: Role, payload: Rec
   const branchId = optionalString(payload?.branchId) || db.branches.find((branch) => branch.active)?.id || 'main'
   if (!db.branches.some((branch) => branch.id === branchId && branch.active)) throw new Error('Active branch not found')
   if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId)) throw new Error('You do not have permission to dispense in this site')
-  if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId)) throw new Error('Only assigned dispensing staff can dispense medicines')
+  if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId)) throw new Error('Only assigned pharmacists can dispense medicines')
   const requestedDraftId = optionalString(payload?.draftId)
   const draft = requestedDraftId
     ? db.posDrafts.find((item) => item.id === requestedDraftId && item.branchId === branchId && item.expiresAt > nowIso())
