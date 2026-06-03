@@ -87,6 +87,31 @@ assertPresent(
   /designation: event\.target\.value as Designation/,
   "Permanent admin should still be able to update designation from user management.",
 );
+assertAbsent(
+  app,
+  /Software name\s*<input/,
+  "Settings must not expose generic software name editing.",
+);
+assertPresent(
+  action,
+  /softwareName: db\.settings\.softwareName/,
+  "Settings updates should preserve the internal software name instead of accepting customer-facing edits.",
+);
+assertPresent(
+  app,
+  /<strong>\{db\.settings\.accountName\}<\/strong>[\s\S]*Company file/,
+  "The side panel should prioritize the Totalenergies company file name.",
+);
+assertPresent(
+  app,
+  /function getLowStockMedicines[\s\S]*medicine\.reorderLevel > 0[\s\S]*\(totals\.get\(medicine\.id\) \?\? 0\) <= medicine\.reorderLevel/,
+  "Low-stock logic must include zero-stock medicines at or below reorder level.",
+);
+assertPresent(
+  app,
+  /const outOfStock = lowStock\.filter/,
+  "Out-of-stock alerts should be derived from low-stock medicines so zero stock is flagged.",
+);
 
 assertAbsent(
   api,
