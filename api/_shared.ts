@@ -220,7 +220,7 @@ type Requisition = {
 type Sale = {
   id: string;
   branchId: string;
-  cashierUserId: string;
+  dispensedByUserId: string;
   customerName: string;
   customerPhone: string;
   paymentMethod: "cash" | "card" | "transfer" | "mixed";
@@ -388,7 +388,6 @@ type Database = {
     pricingRoundingRule?: PricingRoundingRule;
     categoryMarkupPercentages?: Record<string, number>;
     productMarkupPercentages?: Record<string, number>;
-    cashierDiscountLimitPercent?: number;
     managerDiscountLimitPercent?: number;
     unusualMarkupPercent?: number;
     costChangeWarningPercent?: number;
@@ -531,7 +530,6 @@ export function createEmptyDatabase(): Database {
       pricingRoundingRule: 10,
       categoryMarkupPercentages: {},
       productMarkupPercentages: {},
-      cashierDiscountLimitPercent: 5,
       managerDiscountLimitPercent: 10,
       unusualMarkupPercent: 80,
       costChangeWarningPercent: 30,
@@ -969,6 +967,13 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
     rawSettings.primaryAdminId ||
     raw.users?.find((user) => user.role === "admin" && user.status === "active")
       ?.id;
+  const rawUsers = raw.users ?? empty.users;
+  const removedLegacyRoleUserIds = new Set(
+    rawUsers
+      .filter((user) => String((user as { role?: unknown }).role) === "cashier")
+      .map((user) => user.id)
+      .filter(Boolean),
+  );
   const branches = (
     raw.branches?.length
       ? raw.branches
@@ -998,40 +1003,48 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
         .slice(0, 12) ||
       "MAIN",
     managerUserId:
-      branch.managerUserId === primaryAdminId ? "" : branch.managerUserId || "",
+      branch.managerUserId === primaryAdminId ||
+      removedLegacyRoleUserIds.has(branch.managerUserId || "")
+        ? ""
+        : branch.managerUserId || "",
     managerName:
-      branch.managerUserId === primaryAdminId ? "" : branch.managerName || "",
+      branch.managerUserId === primaryAdminId ||
+      removedLegacyRoleUserIds.has(branch.managerUserId || "")
+        ? ""
+        : branch.managerName || "",
     active: branch.active !== false,
   }));
-  const users = (raw.users ?? empty.users).map((user) => {
-    const isPrimaryAdmin = user.id === primaryAdminId;
-    const branchIds = isPrimaryAdmin
-      ? []
-      : user.branchIds?.length
-        ? user.branchIds
-        : [];
-    const managedBranchIds = isPrimaryAdmin
-      ? []
-      : user.managedBranchIds?.length
-        ? user.managedBranchIds
-        : [];
-    return {
-      ...user,
-      role: normalizeRole(user.role),
-      designation: normalizeDesignation(
-        user.designation,
-        user.role === "admin"
-          ? "superintendent_pharmacist"
-          : user.role === "pharmacist"
-            ? "pharmacist"
-            : "pharmacy_technician",
-      ),
-      knownDevices: user.knownDevices ?? [],
-      branchIds: Array.from(new Set(branchIds)),
-      managedBranchIds: Array.from(new Set(managedBranchIds)),
-      branchAccessExpiresAt: user.branchAccessExpiresAt ?? {},
-    };
-  });
+  const users = rawUsers
+    .filter((user) => !removedLegacyRoleUserIds.has(user.id))
+    .map((user) => {
+      const isPrimaryAdmin = user.id === primaryAdminId;
+      const branchIds = isPrimaryAdmin
+        ? []
+        : user.branchIds?.length
+          ? user.branchIds
+          : [];
+      const managedBranchIds = isPrimaryAdmin
+        ? []
+        : user.managedBranchIds?.length
+          ? user.managedBranchIds
+          : [];
+      return {
+        ...user,
+        role: normalizeRole(user.role),
+        designation: normalizeDesignation(
+          user.designation,
+          user.role === "admin"
+            ? "superintendent_pharmacist"
+            : user.role === "pharmacist"
+              ? "pharmacist"
+              : "pharmacy_technician",
+        ),
+        knownDevices: user.knownDevices ?? [],
+        branchIds: Array.from(new Set(branchIds)),
+        managedBranchIds: Array.from(new Set(managedBranchIds)),
+        branchAccessExpiresAt: user.branchAccessExpiresAt ?? {},
+      };
+    });
   const existingMedicineBarcodes = new Set<string>();
   for (const product of raw.products ?? empty.products) {
     for (const barcode of product.barcodes ?? []) {
@@ -1057,35 +1070,43 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
       barcodes,
     };
   });
-  const sales = (raw.sales ?? empty.sales).map((sale) => {
-    const subtotal =
-      Number(sale.subtotal) ||
-      sale.items?.reduce((sum, item) => sum + Number(item.lineTotal || 0), 0) ||
-      0;
-    const discount = Number(sale.discount) || 0;
-    return {
-      ...sale,
-      subtotal,
-      discount,
-      total: Number(sale.total) || Math.max(0, subtotal - discount),
-      followUpMessage: sale.followUpMessage || undefined,
-      items: (sale.items ?? []).map((item) => ({
-        itemType: item.itemType || "medicine",
-        medicineId: item.medicineId || "",
-        productId: item.productId,
-        batchId: item.batchId,
-        itemName: item.itemName,
-        quantity: Number(item.quantity) || 0,
-        unitPrice: Number(item.unitPrice) || 0,
-        lineTotal: Number(item.lineTotal) || 0,
-        daysSupply: Number(item.daysSupply) || undefined,
-        refillDueAt: item.refillDueAt || undefined,
-        counselingNote: item.counselingNote || undefined,
-        followUpMessage: item.followUpMessage || undefined,
-        labelInstruction: item.labelInstruction || undefined,
-      })),
-    };
-  });
+  const sales = (raw.sales ?? empty.sales)
+    .filter(
+      (sale) => !removedLegacyRoleUserIds.has(sale.dispensedByUserId || ""),
+    )
+    .map((sale) => {
+      const subtotal =
+        Number(sale.subtotal) ||
+        sale.items?.reduce(
+          (sum, item) => sum + Number(item.lineTotal || 0),
+          0,
+        ) ||
+        0;
+      const discount = Number(sale.discount) || 0;
+      return {
+        ...sale,
+        dispensedByUserId: sale.dispensedByUserId || "",
+        subtotal,
+        discount,
+        total: Number(sale.total) || Math.max(0, subtotal - discount),
+        followUpMessage: sale.followUpMessage || undefined,
+        items: (sale.items ?? []).map((item) => ({
+          itemType: item.itemType || "medicine",
+          medicineId: item.medicineId || "",
+          productId: item.productId,
+          batchId: item.batchId,
+          itemName: item.itemName,
+          quantity: Number(item.quantity) || 0,
+          unitPrice: Number(item.unitPrice) || 0,
+          lineTotal: Number(item.lineTotal) || 0,
+          daysSupply: Number(item.daysSupply) || undefined,
+          refillDueAt: item.refillDueAt || undefined,
+          counselingNote: item.counselingNote || undefined,
+          followUpMessage: item.followUpMessage || undefined,
+          labelInstruction: item.labelInstruction || undefined,
+        })),
+      };
+    });
   return {
     ...empty,
     ...raw,
@@ -1102,83 +1123,103 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
     suppliers: raw.suppliers ?? empty.suppliers,
     branches,
     batches: raw.batches ?? empty.batches,
-    ledger: (raw.ledger ?? empty.ledger).map((entry) => ({
-      ...entry,
-      itemType: entry.itemType === "product" ? "product" : "medicine",
-      medicineId: entry.medicineId || "",
-      productId: entry.productId || "",
-      batchId: entry.batchId || "",
-      quantity: Number(entry.quantity) || 0,
-      unitCost: Number(entry.unitCost) || undefined,
-      sellingPrice: Number(entry.sellingPrice) || undefined,
-    })),
-    receipts: (raw.receipts ?? empty.receipts).map((receipt) => ({
-      ...receipt,
-      items: (receipt.items ?? []).map((item) => ({
-        ...item,
-        itemType: item.itemType === "product" ? "product" : "medicine",
-        medicineId: item.medicineId || "",
-        productId: item.productId || "",
-        batchId: item.batchId || "",
-        branchId: item.branchId || "",
-        quantity: Number(item.quantity) || 0,
-        unitCost: Number(item.unitCost) || 0,
-        sellingPrice: Number(item.sellingPrice) || 0,
+    ledger: (raw.ledger ?? empty.ledger)
+      .filter((entry) => !removedLegacyRoleUserIds.has(entry.userId))
+      .map((entry) => ({
+        ...entry,
+        itemType: entry.itemType === "product" ? "product" : "medicine",
+        medicineId: entry.medicineId || "",
+        productId: entry.productId || "",
+        batchId: entry.batchId || "",
+        quantity: Number(entry.quantity) || 0,
+        unitCost: Number(entry.unitCost) || undefined,
+        sellingPrice: Number(entry.sellingPrice) || undefined,
       })),
-    })),
+    receipts: (raw.receipts ?? empty.receipts)
+      .filter((receipt) => !removedLegacyRoleUserIds.has(receipt.userId))
+      .map((receipt) => ({
+        ...receipt,
+        items: (receipt.items ?? []).map((item) => ({
+          ...item,
+          itemType: item.itemType === "product" ? "product" : "medicine",
+          medicineId: item.medicineId || "",
+          productId: item.productId || "",
+          batchId: item.batchId || "",
+          branchId: item.branchId || "",
+          quantity: Number(item.quantity) || 0,
+          unitCost: Number(item.unitCost) || 0,
+          sellingPrice: Number(item.sellingPrice) || 0,
+        })),
+      })),
     sales,
-    pendingMedications: (
-      raw.pendingMedications ?? empty.pendingMedications
-    ).map((item) => {
-      const status =
-        item.status === "available" ||
-        item.status === "contacted" ||
-        item.status === "fulfilled" ||
-        item.status === "cancelled"
-          ? item.status
-          : "pending";
-      return {
-        ...item,
-        medicineId: item.medicineId || undefined,
-        patientName: item.patientName || "Patient",
-        patientPhone: item.patientPhone || "",
-        medicationName: item.medicationName || item.genericName || "Medication",
-        genericName: item.genericName || "",
-        strength: item.strength || "",
-        form: item.form || "",
-        quantity: Math.max(1, Number(item.quantity) || 1),
-        unit: item.unit || "unit",
-        sourceNote: item.sourceNote || "",
-        status,
-        requestedAt: item.requestedAt || item.updatedAt || nowIso(),
-        updatedAt: item.updatedAt || item.requestedAt || nowIso(),
-        availableQuantity: Number(item.availableQuantity) || undefined,
-        availableAt: item.availableAt || undefined,
-        contactedAt: item.contactedAt || undefined,
-        fulfilledAt: item.fulfilledAt || undefined,
-        cancelledAt: item.cancelledAt || undefined,
-        resolvedBy: item.resolvedBy || undefined,
-      };
-    }),
-    chatMessages: (raw.chatMessages ?? empty.chatMessages).map((message) => ({
-      ...message,
-      channel: message.channel === "direct" ? "direct" : "group",
-      recipientUserId: message.recipientUserId || "",
-    })),
+    pendingMedications: (raw.pendingMedications ?? empty.pendingMedications)
+      .filter(
+        (item) =>
+          !removedLegacyRoleUserIds.has(item.recordedBy) &&
+          !removedLegacyRoleUserIds.has(item.resolvedBy || ""),
+      )
+      .map((item) => {
+        const status =
+          item.status === "available" ||
+          item.status === "contacted" ||
+          item.status === "fulfilled" ||
+          item.status === "cancelled"
+            ? item.status
+            : "pending";
+        return {
+          ...item,
+          medicineId: item.medicineId || undefined,
+          patientName: item.patientName || "Patient",
+          patientPhone: item.patientPhone || "",
+          medicationName:
+            item.medicationName || item.genericName || "Medication",
+          genericName: item.genericName || "",
+          strength: item.strength || "",
+          form: item.form || "",
+          quantity: Math.max(1, Number(item.quantity) || 1),
+          unit: item.unit || "unit",
+          sourceNote: item.sourceNote || "",
+          status,
+          requestedAt: item.requestedAt || item.updatedAt || nowIso(),
+          updatedAt: item.updatedAt || item.requestedAt || nowIso(),
+          availableQuantity: Number(item.availableQuantity) || undefined,
+          availableAt: item.availableAt || undefined,
+          contactedAt: item.contactedAt || undefined,
+          fulfilledAt: item.fulfilledAt || undefined,
+          cancelledAt: item.cancelledAt || undefined,
+          resolvedBy: item.resolvedBy || undefined,
+        };
+      }),
+    chatMessages: (raw.chatMessages ?? empty.chatMessages)
+      .filter((message) => !removedLegacyRoleUserIds.has(message.userId))
+      .map((message) => ({
+        ...message,
+        channel: message.channel === "direct" ? "direct" : "group",
+        recipientUserId: removedLegacyRoleUserIds.has(
+          message.recipientUserId || "",
+        )
+          ? ""
+          : message.recipientUserId || "",
+      })),
     passwordResetRequests: (
       raw.passwordResetRequests ?? empty.passwordResetRequests
-    ).map((request) => {
-      const status = String(request.status);
-      return {
-        ...request,
-        status:
-          status === "approved" || status === "rejected"
-            ? "expired"
-            : request.status,
-        expiresAt: request.expiresAt ?? new Date(Date.now() - 1).toISOString(),
-      };
-    }),
-    securityEvents: raw.securityEvents ?? empty.securityEvents,
+    )
+      .filter((request) => !removedLegacyRoleUserIds.has(request.userId))
+      .map((request) => {
+        const status = String(request.status);
+        return {
+          ...request,
+          status:
+            status === "approved" || status === "rejected"
+              ? "expired"
+              : request.status,
+          expiresAt:
+            request.expiresAt ?? new Date(Date.now() - 1).toISOString(),
+        };
+      }),
+    securityEvents: (raw.securityEvents ?? empty.securityEvents).filter(
+      (event) => !removedLegacyRoleUserIds.has(event.userId),
+    ),
     requisitions: (raw.requisitions ?? empty.requisitions).map((request) => ({
       ...request,
       items: (request.items ?? []).map((item) => ({
@@ -1186,9 +1227,12 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
         releasedQuantity: item.releasedQuantity ?? item.fulfilledQuantity,
       })),
     })),
-    branchAccessRequests:
-      raw.branchAccessRequests ?? empty.branchAccessRequests,
-    auditLogs: raw.auditLogs ?? empty.auditLogs,
+    branchAccessRequests: (
+      raw.branchAccessRequests ?? empty.branchAccessRequests
+    ).filter((request) => !removedLegacyRoleUserIds.has(request.userId)),
+    auditLogs: (raw.auditLogs ?? empty.auditLogs).filter(
+      (log) => !removedLegacyRoleUserIds.has(log.userId),
+    ),
     settings: {
       ...empty.settings,
       ...rawSettings,

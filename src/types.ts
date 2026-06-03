@@ -154,7 +154,7 @@ export type Receipt = {
 export type Sale = {
   id: string;
   branchId: string;
-  cashierUserId: string;
+  dispensedByUserId: string;
   customerName: string;
   customerPhone: string;
   paymentMethod: "cash" | "card" | "transfer" | "mixed";
@@ -346,7 +346,6 @@ export type AppSettings = {
   pricingRoundingRule?: PricingRoundingRule;
   categoryMarkupPercentages?: Record<string, number>;
   productMarkupPercentages?: Record<string, number>;
-  cashierDiscountLimitPercent?: number;
   managerDiscountLimitPercent?: number;
   unusualMarkupPercent?: number;
   costChangeWarningPercent?: number;

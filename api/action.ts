@@ -26,6 +26,7 @@ import {
 } from "./_shared.js";
 import type {
   Database,
+  Designation,
   HandlerRequest,
   HandlerResponse,
   LedgerType,
@@ -90,7 +91,7 @@ export default async function handler(
         updateUser(db, actor.id, body.payload);
         break;
       case "updateProfile":
-        updateProfile(db, actor.id, body.payload);
+        updateProfile(db, actor.id);
         break;
       case "triggerSecurityPanic":
         await triggerSecurityPanic(req, db, actor.id);
@@ -294,10 +295,6 @@ function pricingPolicy(settings: Database["settings"]) {
     productMarkupPercentages: normalizeMarkupMap(
       settings.productMarkupPercentages,
     ),
-    cashierDiscountLimitPercent: Math.max(
-      0,
-      Number(settings.cashierDiscountLimitPercent ?? 5) || 0,
-    ),
     managerDiscountLimitPercent: Math.max(
       0,
       Number(settings.managerDiscountLimitPercent ?? 10) || 0,
@@ -407,6 +404,7 @@ function updateUser(
   if (!target) throw new Error("User not found");
   const updates = (payload?.updates ?? {}) as Partial<{
     role: Role;
+    designation: Designation;
     status: "pending" | "active" | "suspended";
   }>;
   if (
@@ -420,7 +418,9 @@ function updateUser(
   if (
     target.id === primaryAdminId &&
     ((updates.status && updates.status !== "active") ||
-      (updates.role && updates.role !== "admin"))
+      (updates.role && updates.role !== "admin") ||
+      (updates.designation &&
+        updates.designation !== "superintendent_pharmacist"))
   ) {
     throw new Error(
       "The permanent account admin cannot be downgraded or suspended",
@@ -430,6 +430,21 @@ function updateUser(
     throw new Error("You cannot suspend your own active admin account");
   const before = { ...target };
   if (updates.role) target.role = updates.role;
+  if (updates.designation) {
+    const designation = normalizeDesignation(
+      updates.designation,
+      target.designation,
+    );
+    if (
+      designation === "superintendent_pharmacist" &&
+      target.id !== primaryAdminId
+    ) {
+      throw new Error(
+        "Only the permanent admin account can use the Superintendent Pharmacist designation",
+      );
+    }
+    target.designation = designation;
+  }
   if (updates.status) {
     target.status = updates.status;
     if (updates.status === "active") {
@@ -444,30 +459,12 @@ function updateUser(
   });
 }
 
-function updateProfile(
-  db: Database,
-  actorId: string,
-  payload: Record<string, unknown> | undefined,
-) {
+function updateProfile(db: Database, actorId: string) {
   const actor = db.users.find((user) => user.id === actorId);
   if (!actor) throw new Error("Authentication required");
-  const designation = normalizeDesignation(
-    payload?.designation,
-    actor.designation,
+  throw new Error(
+    "Staff designation is admin-managed. Ask the permanent admin to update your designation.",
   );
-  if (
-    designation === "superintendent_pharmacist" &&
-    !canAdmin(actor, getPrimaryAdminId(db))
-  ) {
-    throw new Error(
-      "Only the permanent admin can use the Superintendent Pharmacist designation",
-    );
-  }
-  const before = { ...actor };
-  actor.designation = designation;
-  addAudit(db, actorId, "Updated user profile", "user", actorId, before, {
-    ...actor,
-  });
 }
 
 async function triggerSecurityPanic(
@@ -2234,7 +2231,7 @@ function recordSale(
   const sale: Sale = {
     id: id("sale"),
     branchId,
-    cashierUserId: actorId,
+    dispensedByUserId: actorId,
     customerName: optionalString(payload?.customerName),
     customerPhone: optionalString(payload?.customerPhone),
     paymentMethod: (optionalString(payload?.paymentMethod) ||
@@ -2437,10 +2434,6 @@ function updateSettings(
     ),
     productMarkupPercentages: normalizeMarkupMap(
       payload?.productMarkupPercentages,
-    ),
-    cashierDiscountLimitPercent: Math.max(
-      0,
-      Math.min(100, Number(payload?.cashierDiscountLimitPercent ?? 5) || 0),
     ),
     managerDiscountLimitPercent: Math.max(
       0,

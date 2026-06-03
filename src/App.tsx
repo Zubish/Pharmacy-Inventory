@@ -36,7 +36,6 @@ import {
   Plus,
   Printer,
   RotateCcw,
-  Save,
   ScanLine,
   Search,
   Send,
@@ -249,7 +248,7 @@ type Receipt = {
 type Sale = {
   id: string;
   branchId: string;
-  cashierUserId: string;
+  dispensedByUserId: string;
   customerName: string;
   customerPhone: string;
   paymentMethod: "cash" | "card" | "transfer" | "mixed";
@@ -452,7 +451,6 @@ type AppSettings = {
   pricingRoundingRule?: PricingRoundingRule;
   categoryMarkupPercentages?: Record<string, number>;
   productMarkupPercentages?: Record<string, number>;
-  cashierDiscountLimitPercent?: number;
   managerDiscountLimitPercent?: number;
   unusualMarkupPercent?: number;
   costChangeWarningPercent?: number;
@@ -754,10 +752,6 @@ function pricingPolicy(settings: AppSettings) {
     productMarkupPercentages: normalizeMarkupMap(
       settings.productMarkupPercentages,
     ),
-    cashierDiscountLimitPercent: Math.max(
-      0,
-      Number(settings.cashierDiscountLimitPercent ?? 5) || 0,
-    ),
     managerDiscountLimitPercent: Math.max(
       0,
       Number(settings.managerDiscountLimitPercent ?? 10) || 0,
@@ -1012,7 +1006,6 @@ function createEmptyDatabase(): Database {
       pricingRoundingRule: 10,
       categoryMarkupPercentages: {},
       productMarkupPercentages: {},
-      cashierDiscountLimitPercent: 5,
       managerDiscountLimitPercent: 10,
       unusualMarkupPercent: 80,
       costChangeWarningPercent: 30,
@@ -8041,8 +8034,8 @@ function POSView({
     const period = `${historyStartDate || "Start"} to ${historyEndDate || "End"}`;
     const rows = filteredSales
       .map((sale) => {
-        const cashier =
-          db.users.find((user) => user.id === sale.cashierUserId)?.name ??
+        const dispenser =
+          db.users.find((user) => user.id === sale.dispensedByUserId)?.name ??
           "Unknown";
         const items = sale.items
           .map(
@@ -8054,7 +8047,7 @@ function POSView({
         return `
         <article>
           <h3>${escapeHtml(sale.reference)} - ${money.format(sale.total ?? sale.subtotal)}</h3>
-          <p>${new Date(sale.soldAt).toLocaleString()} | Dispensed by: ${escapeHtml(cashier)}</p>
+          <p>${new Date(sale.soldAt).toLocaleString()} | Dispensed by: ${escapeHtml(dispenser)}</p>
           <p>Staff/patient: ${escapeHtml(sale.customerName || "Staff member")}${sale.customerPhone ? ` | ${escapeHtml(sale.customerPhone)}` : ""}</p>
           <ul>${items}</ul>
           <p>Cost captured: ${money.format(sale.total ?? sale.subtotal)}</p>
@@ -8611,7 +8604,7 @@ function POSView({
               </button>
             </div>
             {canSell && !canDispense && (
-              <div className="pos-cashier-note">
+              <div className="pos-dispensing-note">
                 Only assigned pharmacists can dispense or save pending
                 medication records.
               </div>
@@ -8698,7 +8691,7 @@ function POSView({
                     <span>
                       {new Date(sale.soldAt).toLocaleString()} / Ref{" "}
                       {sale.reference}
-                      Dispensed by {getUserName(db, sale.cashierUserId)}
+                      Dispensed by {getUserName(db, sale.dispensedByUserId)}
                     </span>
                   </div>
                   <span>
@@ -10685,7 +10678,7 @@ function UserManagement({
 
   function updateUser(
     userId: string,
-    updates: Partial<Pick<User, "role" | "status">>,
+    updates: Partial<Pick<User, "designation" | "role" | "status">>,
   ) {
     const target = db.users.find((user) => user.id === userId);
     if (!target) return;
@@ -10700,7 +10693,9 @@ function UserManagement({
     if (
       target.id === primaryAdminId &&
       ((updates.status && updates.status !== "active") ||
-        (updates.role && updates.role !== "admin"))
+        (updates.role && updates.role !== "admin") ||
+        (updates.designation &&
+          updates.designation !== "superintendent_pharmacist"))
     ) {
       flash("The permanent account admin cannot be downgraded or suspended");
       return;
@@ -10750,7 +10745,28 @@ function UserManagement({
                   </td>
                   <td>{user.phone || "-"}</td>
                   <td>
-                    <span>{getUserDesignationLabel(user)}</span>
+                    <select
+                      value={user.designation ?? "pharmacy_technician"}
+                      onChange={(event) =>
+                        updateUser(user.id, {
+                          designation: event.target.value as Designation,
+                        })
+                      }
+                    >
+                      {(user.id === primaryAdminId
+                        ? [
+                            {
+                              value: "superintendent_pharmacist" as Designation,
+                              label: "Superintendent Pharmacist",
+                            },
+                          ]
+                        : requestDesignationOptions
+                      ).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
                   </td>
                   <td>
                     <select
@@ -11330,9 +11346,7 @@ function SettingsView({
   executeAction: ExecuteAction;
 }) {
   const [form, setForm] = useState(db.settings);
-  const [profileDesignation, setProfileDesignation] = useState<Designation>(
-    currentUser.designation ?? "pharmacy_technician",
-  );
+  const profileDesignation = currentUser.designation ?? "pharmacy_technician";
   const [categoryMarkupText, setCategoryMarkupText] = useState(() =>
     markupMapToText(db.settings.categoryMarkupPercentages),
   );
@@ -11375,15 +11389,6 @@ function SettingsView({
     );
   }
 
-  function submitProfile(event: FormEvent) {
-    event.preventDefault();
-    void executeAction(
-      "updateProfile",
-      { designation: profileDesignation },
-      "Profile saved",
-    );
-  }
-
   return (
     <section className="content-section narrow">
       <div className="section-heading">
@@ -11394,7 +11399,7 @@ function SettingsView({
           </p>
         </div>
       </div>
-      <form className="user-profile-card" onSubmit={submitProfile}>
+      <section className="user-profile-card">
         <div className="user-profile-header">
           <User2 size={20} />
           <div>
@@ -11403,30 +11408,14 @@ function SettingsView({
           </div>
         </div>
         <div className="user-profile-grid">
-          <label>
+          <div className="user-profile-meta">
             Designation
-            <select
-              value={profileDesignation}
-              onChange={(event) =>
-                setProfileDesignation(event.target.value as Designation)
-              }
-            >
-              {(canAdmin
-                ? [
-                    {
-                      value: "superintendent_pharmacist" as Designation,
-                      label: "Superintendent Pharmacist",
-                    },
-                    ...requestDesignationOptions,
-                  ]
-                : requestDesignationOptions
-              ).map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+            <strong>{designationLabels[profileDesignation]}</strong>
+            <small>
+              Designation is managed by the permanent admin so access scope
+              remains auditable.
+            </small>
+          </div>
           <div className="user-profile-meta">
             <span>Access role</span>
             <strong>{roleLabels[currentUser.role]}</strong>
@@ -11445,13 +11434,7 @@ function SettingsView({
             </small>
           </div>
         </div>
-        <div className="form-actions">
-          <button className="primary-button" type="submit">
-            <Save size={17} />
-            Save profile
-          </button>
-        </div>
-      </form>
+      </section>
       <form className="form-grid" onSubmit={submit}>
         <div className="workspace-logo-editor full">
           <BrandMark settings={form} />
@@ -11701,23 +11684,7 @@ function SettingsView({
               </select>
             </label>
             <label>
-              Dispensing discount limit %
-              <input
-                type="number"
-                min="0"
-                max="100"
-                value={numberInputValue(form.cashierDiscountLimitPercent ?? 5)}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    cashierDiscountLimitPercent: Number(event.target.value),
-                  })
-                }
-                disabled={!canAdmin}
-              />
-            </label>
-            <label>
-              Manager discount limit %
+              Staff discount limit %
               <input
                 type="number"
                 min="0"
