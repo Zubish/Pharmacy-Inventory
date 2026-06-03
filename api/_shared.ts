@@ -9,6 +9,10 @@ import {
 } from "node:crypto";
 
 type Role = "admin" | "pharmacist" | "inventory" | "cashier" | "viewer";
+type Designation =
+  | "superintendent_pharmacist"
+  | "pharmacist"
+  | "pharmacy_technician";
 type UserStatus = "pending" | "active" | "suspended";
 type LedgerType =
   | "stock-in"
@@ -25,6 +29,7 @@ type User = {
   name: string;
   email: string;
   phone: string;
+  designation: Designation;
   role: Role;
   status: UserStatus;
   branchIds: string[];
@@ -577,6 +582,7 @@ export type {
   BranchAccessRequestStatus,
   ChatMessage,
   Database,
+  Designation,
   HandlerRequest,
   HandlerResponse,
   LedgerType,
@@ -617,6 +623,17 @@ export function nowIso() {
 
 export function today() {
   return nowIso().slice(0, 10);
+}
+
+export function normalizeDesignation(
+  value: unknown,
+  fallback: Designation = "pharmacy_technician",
+): Designation {
+  return value === "superintendent_pharmacist" ||
+    value === "pharmacist" ||
+    value === "pharmacy_technician"
+    ? value
+    : fallback;
 }
 
 export function slugifyCompany(value: string) {
@@ -1019,6 +1036,14 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
         : [];
     return {
       ...user,
+      designation: normalizeDesignation(
+        user.designation,
+        user.role === "admin"
+          ? "superintendent_pharmacist"
+          : user.role === "pharmacist"
+            ? "pharmacist"
+            : "pharmacy_technician",
+      ),
       knownDevices: user.knownDevices ?? [],
       branchIds: Array.from(new Set(branchIds)),
       managedBranchIds: Array.from(new Set(managedBranchIds)),

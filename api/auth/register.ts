@@ -5,6 +5,7 @@ import {
   hashPassword,
   id,
   loadTenantDatabase,
+  normalizeDesignation,
   nowIso,
   requireMethod,
   saveTenantDatabase,
@@ -21,6 +22,7 @@ export default async function handler(
       name: string;
       email: string;
       phone: string;
+      designation: string;
       password: string;
     }>;
     const companySlug = getCompanySlugFromRequest(req);
@@ -33,7 +35,13 @@ export default async function handler(
       fail(res, 404, "Company portal not found");
       return;
     }
-    if (!body.name || !body.email || !body.phone || !body.password) {
+    if (
+      !body.name ||
+      !body.email ||
+      !body.phone ||
+      !body.designation ||
+      !body.password
+    ) {
       fail(res, 400, "All registration fields are required");
       return;
     }
@@ -52,6 +60,10 @@ export default async function handler(
       name: body.name.trim(),
       email,
       phone: body.phone.trim(),
+      designation: normalizeDesignation(
+        body.designation,
+        "pharmacy_technician",
+      ),
       role: "viewer",
       status: "pending",
       branchIds: [],
@@ -71,6 +83,7 @@ export default async function handler(
       {
         name: user.name,
         email: user.email,
+        designation: user.designation,
         status: user.status,
       },
     );

@@ -77,6 +77,7 @@ export default async function handler(
       name: body.name.trim(),
       email: body.email.trim().toLowerCase(),
       phone: body.phone.trim(),
+      designation: "superintendent_pharmacist",
       role: "admin",
       status: "active",
       branchIds: [],
@@ -175,13 +176,11 @@ export default async function handler(
     root.defaultSlug = tenant.slug;
     await saveRootState(root);
     const session = await createSession(adminId);
-    res
-      .status(200)
-      .json({
-        ...session,
-        db: sanitizeDatabase(db),
-        currentUser: sanitizeDatabase(db).users[0],
-      });
+    res.status(200).json({
+      ...session,
+      db: sanitizeDatabase(db),
+      currentUser: sanitizeDatabase(db).users[0],
+    });
   } catch (error) {
     fail(
       res,

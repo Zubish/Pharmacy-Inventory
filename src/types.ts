@@ -1,4 +1,8 @@
 export type Role = "admin" | "pharmacist" | "inventory" | "cashier" | "viewer";
+export type Designation =
+  | "superintendent_pharmacist"
+  | "pharmacist"
+  | "pharmacy_technician";
 export type UserStatus = "pending" | "active" | "suspended";
 export type LedgerType =
   | "stock-in"
@@ -18,6 +22,7 @@ export type User = {
   name: string;
   email: string;
   phone: string;
+  designation: Designation;
   role: Role;
   status: UserStatus;
   branchIds: string[];
@@ -417,5 +422,6 @@ export type RegisterInput = {
   name: string;
   email: string;
   phone: string;
+  designation: Designation;
   password: string;
 };

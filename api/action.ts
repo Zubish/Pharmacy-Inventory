@@ -16,6 +16,7 @@ import {
   hasActiveBranchAssignment,
   id,
   loadTenantDatabase,
+  normalizeDesignation,
   nowIso,
   requireMethod,
   sanitizeDatabase,
@@ -79,6 +80,9 @@ export default async function handler(
     switch (body.action) {
       case "updateUser":
         updateUser(db, actor.id, body.payload);
+        break;
+      case "updateProfile":
+        updateProfile(db, actor.id, body.payload);
         break;
       case "triggerSecurityPanic":
         await triggerSecurityPanic(req, db, actor.id);
@@ -156,12 +160,10 @@ export default async function handler(
 
     await saveTenantDatabase(companySlug, db);
     const clean = sanitizeDatabase(db);
-    res
-      .status(200)
-      .json({
-        db: clean,
-        currentUser: clean.users.find((user) => user.id === actor.id),
-      });
+    res.status(200).json({
+      db: clean,
+      currentUser: clean.users.find((user) => user.id === actor.id),
+    });
   } catch (error) {
     fail(
       res,
@@ -438,6 +440,32 @@ function updateUser(
   }
   addAudit(db, actorId, "Updated user access", "user", userId, before, {
     ...target,
+  });
+}
+
+function updateProfile(
+  db: Database,
+  actorId: string,
+  payload: Record<string, unknown> | undefined,
+) {
+  const actor = db.users.find((user) => user.id === actorId);
+  if (!actor) throw new Error("Authentication required");
+  const designation = normalizeDesignation(
+    payload?.designation,
+    actor.designation,
+  );
+  if (
+    designation === "superintendent_pharmacist" &&
+    !canAdmin(actor, getPrimaryAdminId(db))
+  ) {
+    throw new Error(
+      "Only the permanent admin can use the Superintendent Pharmacist designation",
+    );
+  }
+  const before = { ...actor };
+  actor.designation = designation;
+  addAudit(db, actorId, "Updated user profile", "user", actorId, before, {
+    ...actor,
   });
 }
 

@@ -78,6 +78,10 @@ import "./App.css";
 const SIDEBAR_WIDTH = 280;
 
 type Role = "admin" | "pharmacist" | "inventory" | "cashier" | "viewer";
+type Designation =
+  | "superintendent_pharmacist"
+  | "pharmacist"
+  | "pharmacy_technician";
 type UserStatus = "pending" | "active" | "suspended";
 type SubscriptionPlanId = "single-branch" | "smart-pharmacy" | "enterprise";
 type View =
@@ -104,6 +108,7 @@ type User = {
   name: string;
   email: string;
   phone: string;
+  designation: Designation;
   role: Role;
   status: UserStatus;
   branchIds: string[];
@@ -554,7 +559,7 @@ const views: Array<{
   { id: "users", label: "Users", icon: Users, adminOnly: true },
   { id: "branches", label: "Branches", icon: Building2 },
   { id: "guide", label: "Guide", icon: BookOpen },
-  { id: "settings", label: "Settings", icon: Settings, adminOnly: true },
+  { id: "settings", label: "Settings", icon: Settings },
 ];
 
 const roleLabels: Record<Role, string> = {
@@ -564,6 +569,26 @@ const roleLabels: Record<Role, string> = {
   cashier: "Cashier",
   viewer: "Viewer/Auditor",
 };
+
+const designationLabels: Record<Designation, string> = {
+  superintendent_pharmacist: "Superintendent Pharmacist",
+  pharmacist: "Pharmacist",
+  pharmacy_technician: "Pharmacy Technician",
+};
+
+const accessIdentityLabels: Record<Designation, string> = {
+  superintendent_pharmacist: "Global Access",
+  pharmacist: "Prescription Officer",
+  pharmacy_technician: "Inventory Officer",
+};
+
+const requestDesignationOptions: Array<{
+  value: Designation;
+  label: string;
+}> = [
+  { value: "pharmacist", label: "Pharmacist" },
+  { value: "pharmacy_technician", label: "Pharmacy Technician" },
+];
 
 const statusLabels: Record<UserStatus, string> = {
   pending: "Pending approval",
@@ -1656,6 +1681,15 @@ function getUserHomeRoleLabel(db: Database, user: User, branchId?: string) {
   return roleLabels[user.role];
 }
 
+function getUserDesignationLabel(user: User) {
+  return designationLabels[user.designation ?? "pharmacy_technician"];
+}
+
+function getUserIdentityScope(db: Database, user: User) {
+  if (isSuperAdmin(db, user)) return "Global Access";
+  return accessIdentityLabels[user.designation ?? "pharmacy_technician"];
+}
+
 function getOtherAssignedBranch(db: Database, user: User, branchId: string) {
   const otherId = [...user.managedBranchIds, ...user.branchIds].find(
     (id) => id !== branchId && hasActiveBranchAssignment(user, id),
@@ -2674,13 +2708,9 @@ function App() {
           <div className="user-panel">
             <div>
               <strong>{currentUser.name}</strong>
-              <span>
-                {canAdmin
-                  ? "Global access"
-                  : (assignedBranch?.name ?? "No assigned branch")}
-              </span>
-              <span>
-                {getUserHomeRoleLabel(db, currentUser, assignedBranch?.id)}
+              <span>{getUserDesignationLabel(currentUser)}</span>
+              <span className="user-access-chip">
+                {getUserIdentityScope(db, currentUser)}
               </span>
             </div>
             <button
@@ -2954,6 +2984,7 @@ function App() {
           {activeView === "settings" && (
             <SettingsView
               db={db}
+              currentUser={currentUser}
               canAdmin={canAdmin}
               executeAction={executeAction}
             />
@@ -2987,6 +3018,7 @@ type RegisterInput = {
   name: string;
   email: string;
   phone: string;
+  designation: Designation;
   password: string;
 };
 
@@ -3456,6 +3488,7 @@ function RegisterForm({
     name: "",
     email: "",
     phone: "",
+    designation: "pharmacy_technician",
     password: "",
   });
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -3475,7 +3508,13 @@ function RegisterForm({
     }
     try {
       await registerUser(form);
-      setForm({ name: "", email: "", phone: "", password: "" });
+      setForm({
+        name: "",
+        email: "",
+        phone: "",
+        designation: "pharmacy_technician",
+        password: "",
+      });
       setConfirmPassword("");
       setSuccess(
         "Access request submitted. An admin must approve and assign your role before you can sign in.",
@@ -3515,6 +3554,25 @@ function RegisterForm({
           value={form.phone}
           onChange={(event) => setForm({ ...form, phone: event.target.value })}
         />
+      </label>
+      <label className="full">
+        Designation
+        <select
+          required
+          value={form.designation}
+          onChange={(event) =>
+            setForm({
+              ...form,
+              designation: event.target.value as Designation,
+            })
+          }
+        >
+          {requestDesignationOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
       </label>
       <PasswordInput
         label="New password"
@@ -10875,7 +10933,8 @@ function UserManagement({
               <tr>
                 <th>User</th>
                 <th>Phone</th>
-                <th>Role</th>
+                <th>Designation</th>
+                <th>Access role</th>
                 <th>Branch access</th>
                 <th>Status</th>
                 <th>Requested</th>
@@ -10893,6 +10952,9 @@ function UserManagement({
                     </span>
                   </td>
                   <td>{user.phone || "-"}</td>
+                  <td>
+                    <span>{getUserDesignationLabel(user)}</span>
+                  </td>
                   <td>
                     <select
                       value={user.role}
@@ -11461,14 +11523,19 @@ function BranchesView({
 
 function SettingsView({
   db,
+  currentUser,
   canAdmin,
   executeAction,
 }: {
   db: Database;
+  currentUser: User;
   canAdmin: boolean;
   executeAction: ExecuteAction;
 }) {
   const [form, setForm] = useState(db.settings);
+  const [profileDesignation, setProfileDesignation] = useState<Designation>(
+    currentUser.designation ?? "pharmacy_technician",
+  );
   const [categoryMarkupText, setCategoryMarkupText] = useState(() =>
     markupMapToText(db.settings.categoryMarkupPercentages),
   );
@@ -11511,14 +11578,83 @@ function SettingsView({
     );
   }
 
+  function submitProfile(event: FormEvent) {
+    event.preventDefault();
+    void executeAction(
+      "updateProfile",
+      { designation: profileDesignation },
+      "Profile saved",
+    );
+  }
+
   return (
     <section className="content-section narrow">
       <div className="section-heading">
         <div>
           <h2>Totalenergies Settings</h2>
-          <p>Company pharmacy file identity and operational thresholds.</p>
+          <p>
+            Your staff profile stays separate from admin-assigned access roles.
+          </p>
         </div>
       </div>
+      <form className="user-profile-card" onSubmit={submitProfile}>
+        <div className="user-profile-header">
+          <User2 size={20} />
+          <div>
+            <strong>{currentUser.name}</strong>
+            <span>{currentUser.email}</span>
+          </div>
+        </div>
+        <div className="user-profile-grid">
+          <label>
+            Designation
+            <select
+              value={profileDesignation}
+              onChange={(event) =>
+                setProfileDesignation(event.target.value as Designation)
+              }
+            >
+              {(canAdmin
+                ? [
+                    {
+                      value: "superintendent_pharmacist" as Designation,
+                      label: "Superintendent Pharmacist",
+                    },
+                    ...requestDesignationOptions,
+                  ]
+                : requestDesignationOptions
+              ).map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="user-profile-meta">
+            <span>Access role</span>
+            <strong>{roleLabels[currentUser.role]}</strong>
+            <small>
+              Admin can change access permissions without changing this
+              designation.
+            </small>
+          </div>
+          <div className="user-profile-meta">
+            <span>Side panel display</span>
+            <strong>{designationLabels[profileDesignation]}</strong>
+            <small>
+              {profileDesignation === "superintendent_pharmacist"
+                ? "Global Access"
+                : accessIdentityLabels[profileDesignation]}
+            </small>
+          </div>
+        </div>
+        <div className="form-actions">
+          <button className="primary-button" type="submit">
+            <Save size={17} />
+            Save profile
+          </button>
+        </div>
+      </form>
       <form className="form-grid" onSubmit={submit}>
         <div className="workspace-logo-editor full">
           <BrandMark settings={form} />
