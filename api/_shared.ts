@@ -8,7 +8,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 
-type Role = "admin" | "pharmacist" | "inventory" | "cashier" | "viewer";
+type Role = "admin" | "pharmacist" | "inventory" | "viewer";
 type Designation =
   | "superintendent_pharmacist"
   | "pharmacist"
@@ -231,7 +231,6 @@ type Sale = {
   subtotal: number;
   discount: number;
   total: number;
-  bookingCode?: string;
   items: Array<{
     itemType: "medicine" | "product";
     medicineId: string;
@@ -247,31 +246,6 @@ type Sale = {
     followUpMessage?: string;
     labelInstruction?: string;
   }>;
-};
-
-type PosDraft = {
-  id: string;
-  userId: string;
-  branchId: string;
-  bookingCode: string;
-  customerName: string;
-  customerPhone: string;
-  paymentMethod: Sale["paymentMethod"];
-  discount: number;
-  note: string;
-  followUpMessage?: string;
-  items: Array<{
-    itemType: "medicine" | "product";
-    itemId: string;
-    quantity: number;
-    requestedQuantity?: number;
-    daysSupply?: number;
-    counselingNote?: string;
-    labelInstruction?: string;
-  }>;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string;
 };
 
 type PendingMedicationStatus =
@@ -380,7 +354,6 @@ type Database = {
     }>;
   }>;
   sales: Sale[];
-  posDrafts: PosDraft[];
   pendingMedications: PendingMedication[];
   chatMessages: ChatMessage[];
   passwordResetRequests: PasswordResetRequest[];
@@ -444,6 +417,7 @@ type HandlerRequest = {
 
 const SESSION_DAYS = 14;
 const SESSION_IDLE_MINUTES = 30;
+const SESSION_COOKIE_NAME = "totalenergies_pharmacy_session";
 export const TOTALENERGIES_COMPANY_SLUG = "totalenergies-clinic-pharmacy";
 export const TOTALENERGIES_ACCOUNT_NAME = "Totalenergies Clinic Pharmacy";
 
@@ -533,7 +507,6 @@ export function createEmptyDatabase(): Database {
     ledger: [],
     receipts: [],
     sales: [],
-    posDrafts: [],
     pendingMedications: [],
     chatMessages: [],
     passwordResetRequests: [],
@@ -591,7 +564,6 @@ export type {
   PasswordResetRequest,
   PendingMedication,
   PendingMedicationStatus,
-  PosDraft,
   Product,
   Requisition,
   RequisitionItem,
@@ -634,6 +606,15 @@ export function normalizeDesignation(
     value === "pharmacy_technician"
     ? value
     : fallback;
+}
+
+function normalizeRole(value: unknown): Role {
+  return value === "admin" ||
+    value === "pharmacist" ||
+    value === "inventory" ||
+    value === "viewer"
+    ? value
+    : "viewer";
 }
 
 export function slugifyCompany(value: string) {
@@ -1036,6 +1017,7 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
         : [];
     return {
       ...user,
+      role: normalizeRole(user.role),
       designation: normalizeDesignation(
         user.designation,
         user.role === "admin"
@@ -1145,21 +1127,6 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
       })),
     })),
     sales,
-    posDrafts: (raw.posDrafts ?? empty.posDrafts)
-      .filter((draft) => draft.expiresAt > nowIso())
-      .map((draft) => ({
-        ...draft,
-        followUpMessage: draft.followUpMessage || undefined,
-        items: (draft.items ?? []).map((item) => ({
-          itemType: item.itemType === "product" ? "product" : "medicine",
-          itemId: item.itemId || "",
-          quantity: Number(item.quantity) || 0,
-          requestedQuantity: Number(item.requestedQuantity) || undefined,
-          daysSupply: Number(item.daysSupply) || undefined,
-          counselingNote: item.counselingNote || undefined,
-          labelInstruction: item.labelInstruction || undefined,
-        })),
-      })),
     pendingMedications: (
       raw.pendingMedications ?? empty.pendingMedications
     ).map((item) => {
@@ -1334,6 +1301,32 @@ export async function createSession(userId: string) {
   return { token, expiresAt };
 }
 
+function sessionCookieAttributes(maxAgeSeconds: number) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  return `Path=/; Max-Age=${maxAgeSeconds}; HttpOnly; SameSite=Lax${secure}`;
+}
+
+export function setSessionCookie(
+  res: HandlerResponse,
+  session: { token: string; expiresAt: string },
+) {
+  const maxAgeSeconds = Math.max(
+    0,
+    Math.floor((new Date(session.expiresAt).getTime() - Date.now()) / 1000),
+  );
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}; ${sessionCookieAttributes(maxAgeSeconds)}`,
+  );
+}
+
+export function clearSessionCookie(res: HandlerResponse) {
+  res.setHeader(
+    "Set-Cookie",
+    `${SESSION_COOKIE_NAME}=; ${sessionCookieAttributes(0)}`,
+  );
+}
+
 export async function deleteOtherSessions(userId: string, currentToken = "") {
   const sql = getSql();
   if (currentToken) {
@@ -1355,8 +1348,23 @@ export function getBearerToken(req: HandlerRequest) {
   return header.slice("Bearer ".length);
 }
 
+export function getCookieToken(req: HandlerRequest) {
+  const raw = req.headers.cookie;
+  const header = Array.isArray(raw) ? raw.join("; ") : raw || "";
+  const cookie = header
+    .split(";")
+    .map((item) => item.trim())
+    .find((item) => item.startsWith(`${SESSION_COOKIE_NAME}=`));
+  if (!cookie) return "";
+  return decodeURIComponent(cookie.slice(SESSION_COOKIE_NAME.length + 1));
+}
+
+export function getSessionToken(req: HandlerRequest) {
+  return getCookieToken(req) || getBearerToken(req);
+}
+
 export async function getAuthenticatedUser(req: HandlerRequest, db: Database) {
-  const token = getBearerToken(req);
+  const token = getSessionToken(req);
   if (!token) return null;
   const sql = getSql();
   const tokenHash = hashToken(token);

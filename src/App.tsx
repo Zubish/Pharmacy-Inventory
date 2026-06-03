@@ -77,7 +77,7 @@ import "./App.css";
 
 const SIDEBAR_WIDTH = 280;
 
-type Role = "admin" | "pharmacist" | "inventory" | "cashier" | "viewer";
+type Role = "admin" | "pharmacist" | "inventory" | "viewer";
 type Designation =
   | "superintendent_pharmacist"
   | "pharmacist"
@@ -260,7 +260,6 @@ type Sale = {
   subtotal: number;
   discount: number;
   total: number;
-  bookingCode?: string;
   items: Array<{
     itemType: "medicine" | "product";
     medicineId: string;
@@ -276,31 +275,6 @@ type Sale = {
     followUpMessage?: string;
     labelInstruction?: string;
   }>;
-};
-
-type PosDraft = {
-  id: string;
-  userId: string;
-  branchId: string;
-  bookingCode: string;
-  customerName: string;
-  customerPhone: string;
-  paymentMethod: Sale["paymentMethod"];
-  discount: number;
-  note: string;
-  followUpMessage?: string;
-  items: Array<{
-    itemType: "medicine" | "product";
-    itemId: string;
-    quantity: number;
-    requestedQuantity?: number;
-    daysSupply?: number;
-    counselingNote?: string;
-    labelInstruction?: string;
-  }>;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string;
 };
 
 type PendingMedicationStatus =
@@ -501,7 +475,6 @@ type Database = {
   ledger: LedgerEntry[];
   receipts: Receipt[];
   sales: Sale[];
-  posDrafts: PosDraft[];
   pendingMedications: PendingMedication[];
   chatMessages: ChatMessage[];
   auditLogs: AuditLog[];
@@ -566,7 +539,6 @@ const roleLabels: Record<Role, string> = {
   admin: "Admin",
   pharmacist: "Pharmacist",
   inventory: "Pharmacy Technician",
-  cashier: "Cashier",
   viewer: "Viewer/Auditor",
 };
 
@@ -1016,7 +988,6 @@ function createEmptyDatabase(): Database {
     ledger: [],
     receipts: [],
     sales: [],
-    posDrafts: [],
     pendingMedications: [],
     chatMessages: [],
     auditLogs: [],
@@ -5732,12 +5703,14 @@ function Medicines({
 function PendingMedicationRecords({
   db,
   activeBranch,
+  canViewPatientPhone,
   canManage,
   executeAction,
   flash,
 }: {
   db: Database;
   activeBranch?: Branch;
+  canViewPatientPhone: boolean;
   canManage: boolean;
   executeAction: ExecuteAction;
   flash: (message: string) => void;
@@ -5875,7 +5848,12 @@ function PendingMedicationRecords({
                     <dt>Patient</dt>
                     <dd>
                       {item.patientName}
-                      {item.patientPhone ? ` / ${item.patientPhone}` : ""}
+                      {item.patientPhone && canViewPatientPhone
+                        ? ` / ${item.patientPhone}`
+                        : ""}
+                      {item.patientPhone && !canViewPatientPhone
+                        ? " / phone restricted"
+                        : ""}
                     </dd>
                   </div>
                   <div>
@@ -5921,7 +5899,7 @@ function PendingMedicationRecords({
                   </div>
                 )}
                 <footer>
-                  {item.patientPhone && (
+                  {item.patientPhone && canViewPatientPhone && (
                     <a
                       className="ghost-button"
                       href={whatsappHref(item.patientPhone, message)}
@@ -5943,16 +5921,6 @@ function PendingMedicationRecords({
                       disabled={!canManage}
                     >
                       Contacted
-                    </button>
-                  )}
-                  {(item.status === "pending" ||
-                    item.status === "contacted") && (
-                    <button
-                      type="button"
-                      onClick={() => updateStatus(item, "available")}
-                      disabled={!canManage}
-                    >
-                      Mark available
                     </button>
                   )}
                   {(item.status === "available" ||
@@ -7510,41 +7478,13 @@ function POSView({
     unitPrice: number;
     scanCodes: string[];
   };
-  const currentDraft = db.posDrafts.find(
-    (draft) =>
-      draft.userId === currentUser.id &&
-      draft.branchId === activeBranch.id &&
-      draft.expiresAt > new Date().toISOString(),
-  );
   const [query, setQuery] = useState("");
   const [scan, setScan] = useState("");
-  const [cart, setCart] = useState<CartItem[]>(
-    () =>
-      currentDraft?.items.map((item) => ({
-        rowId: id("pos"),
-        itemType: item.itemType,
-        itemId: item.itemId,
-        quantity: item.quantity,
-        requestedQuantity: item.requestedQuantity,
-        daysSupply: item.daysSupply,
-        counselingNote: item.counselingNote,
-        labelInstruction: item.labelInstruction,
-      })) ?? [],
-  );
-  const [customerName, setCustomerName] = useState(
-    currentDraft?.customerName ?? "",
-  );
-  const [customerPhone, setCustomerPhone] = useState(
-    currentDraft?.customerPhone ?? "",
-  );
-  const [note, setNote] = useState(currentDraft?.note ?? "");
-  const [followUpMessage, setFollowUpMessage] = useState(
-    currentDraft?.followUpMessage ?? "",
-  );
-  const [selectedDraftId, setSelectedDraftId] = useState(
-    currentDraft?.id ?? "",
-  );
-  const [draftsOpen, setDraftsOpen] = useState(false);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [note, setNote] = useState("");
+  const [followUpMessage, setFollowUpMessage] = useState("");
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyStartDate, setHistoryStartDate] = useState(today());
   const [historyEndDate, setHistoryEndDate] = useState(today());
@@ -7683,13 +7623,6 @@ function POSView({
       )
       .filter(Boolean),
   ).size;
-  const branchDrafts = db.posDrafts
-    .filter(
-      (draft) =>
-        draft.branchId === activeBranch.id &&
-        draft.expiresAt > new Date().toISOString(),
-    )
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   const canDispense =
     currentUser.role === "pharmacist" &&
     hasActiveBranchAssignment(currentUser, activeBranch.id);
@@ -7941,7 +7874,6 @@ function POSView({
   function salePayload() {
     return {
       branchId: activeBranch.id,
-      draftId: selectedDraftId,
       customerName,
       customerPhone,
       paymentMethod: "cash" as Sale["paymentMethod"],
@@ -7960,16 +7892,6 @@ function POSView({
     };
   }
 
-  async function saveDraft() {
-    if (!canSell || !cart.length) return;
-    const saved = await executeAction(
-      "savePosDraft",
-      salePayload(),
-      "prescription basket saved as a 10-minute draft",
-    );
-    if (saved) resetSaleForm();
-  }
-
   function resetSaleForm() {
     setCart([]);
     setCustomerName("");
@@ -7977,43 +7899,11 @@ function POSView({
     setNote("");
     setFollowUpMessage("");
     setScan("");
-    setSelectedDraftId("");
   }
 
   function clearCart() {
     resetSaleForm();
     flash("prescription basket cleared");
-  }
-
-  function deleteDraft(draftId: string) {
-    void executeAction(
-      "clearPosDraft",
-      { branchId: activeBranch.id, draftId },
-      "Prescription draft cleared",
-    );
-    if (draftId === selectedDraftId) resetSaleForm();
-  }
-
-  function loadDraft(draft: PosDraft) {
-    setSelectedDraftId(draft.id);
-    setCart(
-      draft.items.map((item) => ({
-        rowId: id("pos"),
-        itemType: item.itemType,
-        itemId: item.itemId,
-        quantity: item.quantity,
-        requestedQuantity: item.requestedQuantity,
-        daysSupply: item.daysSupply,
-        counselingNote: item.counselingNote,
-        labelInstruction: item.labelInstruction,
-      })),
-    );
-    setCustomerName(draft.customerName);
-    setCustomerPhone(draft.customerPhone);
-    setNote(draft.note);
-    setFollowUpMessage(draft.followUpMessage ?? "");
-    setDraftsOpen(false);
-    flash(`Draft ${draft.bookingCode} loaded`);
   }
 
   function buildMedicationLabels() {
@@ -8354,15 +8244,6 @@ function POSView({
                   ready / FEFO batch selected
                 </p>
               </div>
-              <button
-                className="pos-draft-pill"
-                type="button"
-                onClick={() => setDraftsOpen(true)}
-              >
-                <FileText size={13} />
-                Draft
-                {branchDrafts.length > 0 && <b>{branchDrafts.length}</b>}
-              </button>
             </div>
 
             <div className="pos-cart-lines">
@@ -8708,14 +8589,6 @@ function POSView({
             <div className="pos-action-row">
               <button
                 type="button"
-                onClick={saveDraft}
-                disabled={!canSell || !cartRows.length}
-              >
-                <Save size={16} />
-                Draft
-              </button>
-              <button
-                type="button"
                 onClick={clearCart}
                 disabled={!canSell || !cartRows.length}
               >
@@ -8739,8 +8612,8 @@ function POSView({
             </div>
             {canSell && !canDispense && (
               <div className="pos-cashier-note">
-                Only assigned pharmacists can dispense. Save as a draft for
-                handoff.
+                Only assigned pharmacists can dispense or save pending
+                medication records.
               </div>
             )}
           </aside>
@@ -8825,7 +8698,6 @@ function POSView({
                     <span>
                       {new Date(sale.soldAt).toLocaleString()} / Ref{" "}
                       {sale.reference}
-                      {sale.bookingCode ? ` / Draft ${sale.bookingCode}` : ""} /
                       Dispensed by {getUserName(db, sale.cashierUserId)}
                     </span>
                   </div>
@@ -8848,82 +8720,6 @@ function POSView({
               {!filteredSales.length && (
                 <div className="empty-state">
                   No dispensing records for this period.
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
-      )}
-
-      {draftsOpen && (
-        <div
-          className="pos-modal-backdrop"
-          role="presentation"
-          onMouseDown={() => setDraftsOpen(false)}
-        >
-          <section
-            className="pos-modal-panel pos-drafts-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="pos-drafts-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <header className="pos-modal-header">
-              <div>
-                <span className="pos-modal-kicker">
-                  Temporary prescription baskets
-                </span>
-                <h3 id="pos-drafts-title">Prescription drafts</h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setDraftsOpen(false)}
-                aria-label="Close draft carts"
-              >
-                <X size={18} />
-              </button>
-            </header>
-            <div className="pos-modal-list">
-              {branchDrafts.map((draft) => {
-                const draftTotal = draft.items.reduce((sum, item) => {
-                  const option = makeSaleOption(item.itemType, item.itemId);
-                  return sum + (option?.unitPrice ?? 0) * item.quantity;
-                }, 0);
-                return (
-                  <article className="pos-draft-item" key={draft.id}>
-                    <div>
-                      <strong>Draft {draft.bookingCode}</strong>
-                      <span>
-                        {draft.customerName || "Staff member"}
-                        {draft.customerPhone ? ` / ${draft.customerPhone}` : ""}
-                      </span>
-                      <small>
-                        {draft.items.length} item
-                        {draft.items.length === 1 ? "" : "s"} / expires{" "}
-                        {new Date(draft.expiresAt).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </small>
-                    </div>
-                    <b>{money.format(draftTotal)}</b>
-                    <footer>
-                      <button type="button" onClick={() => loadDraft(draft)}>
-                        Load
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteDraft(draft.id)}
-                      >
-                        Clear
-                      </button>
-                    </footer>
-                  </article>
-                );
-              })}
-              {!branchDrafts.length && (
-                <div className="empty-state">
-                  No active prescription drafts for this site.
                 </div>
               )}
             </div>
@@ -9277,6 +9073,7 @@ function PatientsView({
       <PendingMedicationRecords
         db={db}
         activeBranch={activeBranch}
+        canViewPatientPhone={currentUser.role !== "viewer"}
         canManage={Boolean(
           activeBranch &&
             canManagePendingMedication(db, currentUser, activeBranch.id),

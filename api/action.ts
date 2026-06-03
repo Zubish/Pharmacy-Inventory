@@ -32,7 +32,6 @@ import type {
   Medicine,
   PendingMedication,
   PendingMedicationStatus,
-  PosDraft,
   Product,
   Role,
   Sale,
@@ -53,6 +52,15 @@ type PricingRoundingRule = NonNullable<
   Database["settings"]["pricingRoundingRule"]
 >;
 const pricingRoundingRules: PricingRoundingRule[] = [0, 1, 5, 10, 50, 100];
+type PrescriptionInput = {
+  itemType: "medicine" | "product";
+  itemId: string;
+  quantity: number;
+  requestedQuantity?: number;
+  daysSupply?: number;
+  counselingNote?: string;
+  labelInstruction?: string;
+};
 
 export default async function handler(
   req: HandlerRequest,
@@ -131,12 +139,6 @@ export default async function handler(
         break;
       case "recordSale":
         recordSale(db, actor.id, actor.role, body.payload);
-        break;
-      case "savePosDraft":
-        savePosDraft(db, actor.id, actor.role, body.payload);
-        break;
-      case "clearPosDraft":
-        clearPosDraft(db, actor.id, body.payload);
         break;
       case "adjustStock":
         adjustStock(db, actor.id, actor.role, body.payload);
@@ -379,7 +381,6 @@ function discountLimitPercent(db: Database, actor: User) {
     return policy.managerDiscountLimitPercent;
   if (actor.role === "pharmacist" || actor.role === "inventory")
     return policy.managerDiscountLimitPercent;
-  if (actor.role === "cashier") return policy.cashierDiscountLimitPercent;
   return 0;
 }
 
@@ -848,6 +849,21 @@ function updatePendingMedication(
       "Only pharmacists, branch managers, or the permanent admin can update pending patient medications",
     );
   const status = normalizePendingStatus(payload?.status);
+  if (status === "available") {
+    const medicine = pending.medicineId
+      ? db.medicines.find((item) => item.id === pending.medicineId)
+      : db.medicines.find((item) => pendingMatchesMedicine(pending, item));
+    const availableQuantity = medicine
+      ? getMedicineAvailableInBranch(db, medicine.id, pending.branchId)
+      : 0;
+    if (!medicine || availableQuantity <= 0) {
+      throw new Error(
+        "Pending medication can become available only after matching stock exists in this branch",
+      );
+    }
+    pending.medicineId = pending.medicineId || medicine.id;
+    pending.availableQuantity = availableQuantity;
+  }
   const before = { ...pending };
   pending.status = status;
   pending.updatedAt = nowIso();
@@ -881,7 +897,7 @@ function recordPendingMedicationFromPrescription(
   actorId: string,
   branchId: string,
   payload: Record<string, unknown> | undefined,
-  item: PosDraft["items"][number],
+  item: PrescriptionInput,
 ) {
   if (item.itemType !== "medicine") return undefined;
   const medicine = db.medicines.find(
@@ -1287,7 +1303,7 @@ function upsertBranch(
       (user) => user.id === managerUserId && user.status === "active",
     );
     if (!manager) throw new Error("Manager user not found");
-    if (manager.role === "viewer" || manager.role === "cashier")
+    if (manager.role === "viewer")
       throw new Error(
         "Only admins, pharmacists, or Pharmacy Technicians can be branch managers",
       );
@@ -2002,25 +2018,13 @@ function receiptReference() {
   return `RXL-${stamp}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 }
 
-function bookingCode() {
-  return `BK-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-}
-
-function activeDraft(db: Database, userId: string, branchId: string) {
-  const now = nowIso();
-  db.posDrafts = db.posDrafts.filter((draft) => draft.expiresAt > now);
-  return db.posDrafts.find(
-    (draft) => draft.userId === userId && draft.branchId === branchId,
-  );
-}
-
 function addDays(dateIso: string, days: number) {
   const date = new Date(dateIso);
   date.setDate(date.getDate() + days);
   return date.toISOString().slice(0, 10);
 }
 
-function normalizeDraftItems(payload: unknown): PosDraft["items"] {
+function normalizePrescriptionItems(payload: unknown): PrescriptionInput[] {
   if (!Array.isArray(payload)) return [];
   return payload
     .map((item) => {
@@ -2044,92 +2048,6 @@ function normalizeDraftItems(payload: unknown): PosDraft["items"] {
     .filter((item) => item.quantity > 0 || (item.requestedQuantity ?? 0) > 0);
 }
 
-function savePosDraft(
-  db: Database,
-  actorId: string,
-  actorRole: Role,
-  payload: Record<string, unknown> | undefined,
-) {
-  const actor = db.users.find((user) => user.id === actorId);
-  if (!actor) throw new Error("Authentication required");
-  const branchId = requireString(payload?.branchId, "Branch");
-  if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId))
-    throw new Error(
-      "You do not have permission to prepare prescriptions in this site",
-    );
-  const items = normalizeDraftItems(payload?.items);
-  if (!items.length)
-    throw new Error("Add at least one medicine to save the prescription draft");
-  const existing = activeDraft(db, actorId, branchId);
-  const now = nowIso();
-  const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-  const draftDiscount = Math.max(0, Number(payload?.discount) || 0);
-  const draft: PosDraft = {
-    id: existing?.id || id("draft"),
-    userId: actorId,
-    branchId,
-    bookingCode: existing?.bookingCode || bookingCode(),
-    customerName:
-      optionalString(payload?.customerName) || existing?.customerName || "",
-    customerPhone:
-      optionalString(payload?.customerPhone) || existing?.customerPhone || "",
-    paymentMethod: (optionalString(payload?.paymentMethod) ||
-      existing?.paymentMethod ||
-      "cash") as Sale["paymentMethod"],
-    discount: draftDiscount,
-    note: optionalString(payload?.note) || existing?.note || "",
-    followUpMessage:
-      optionalString(payload?.followUpMessage) ||
-      existing?.followUpMessage ||
-      "",
-    items,
-    createdAt: existing?.createdAt || now,
-    updatedAt: now,
-    expiresAt,
-  };
-  db.posDrafts = existing
-    ? db.posDrafts.map((item) => (item.id === existing.id ? draft : item))
-    : [draft, ...db.posDrafts];
-  addAudit(
-    db,
-    actorId,
-    "Saved prescription draft",
-    "pos-draft",
-    draft.id,
-    existing,
-    draft,
-  );
-}
-
-function clearPosDraft(
-  db: Database,
-  actorId: string,
-  payload: Record<string, unknown> | undefined,
-) {
-  const branchId = requireString(payload?.branchId, "Branch");
-  const draftId = optionalString(payload?.draftId);
-  const before = draftId
-    ? db.posDrafts.find(
-        (draft) => draft.id === draftId && draft.branchId === branchId,
-      )
-    : activeDraft(db, actorId, branchId);
-  db.posDrafts = draftId
-    ? db.posDrafts.filter((draft) => draft.id !== draftId)
-    : db.posDrafts.filter(
-        (draft) => !(draft.userId === actorId && draft.branchId === branchId),
-      );
-  if (before)
-    addAudit(
-      db,
-      actorId,
-      "Cleared prescription draft",
-      "pos-draft",
-      before.id,
-      before,
-      undefined,
-    );
-}
-
 function recordSale(
   db: Database,
   actorId: string,
@@ -2148,16 +2066,7 @@ function recordSale(
     throw new Error("You do not have permission to dispense in this site");
   if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId))
     throw new Error("Only assigned pharmacists can dispense medicines");
-  const requestedDraftId = optionalString(payload?.draftId);
-  const draft = requestedDraftId
-    ? db.posDrafts.find(
-        (item) =>
-          item.id === requestedDraftId &&
-          item.branchId === branchId &&
-          item.expiresAt > nowIso(),
-      )
-    : activeDraft(db, actorId, branchId);
-  const inputs = normalizeDraftItems(payload?.items ?? draft?.items);
+  const inputs = normalizePrescriptionItems(payload?.items);
   if (!inputs.length)
     throw new Error("Add at least one medicine to the prescription basket");
 
@@ -2293,7 +2202,6 @@ function recordSale(
       throw new Error(
         "Add at least one supplied or unavailable medicine to the prescription basket",
       );
-    db.posDrafts = db.posDrafts.filter((item) => item.id !== draft?.id);
     addAudit(
       db,
       actorId,
@@ -2307,7 +2215,7 @@ function recordSale(
   }
   const subtotal = saleItems.reduce((sum, item) => sum + item.lineTotal, 0);
   const requestedDiscount = Math.min(
-    Math.max(0, Number(payload?.discount ?? draft?.discount) || 0),
+    Math.max(0, Number(payload?.discount) || 0),
     subtotal,
   );
   const maxDiscount =
@@ -2327,27 +2235,21 @@ function recordSale(
     id: id("sale"),
     branchId,
     cashierUserId: actorId,
-    customerName:
-      optionalString(payload?.customerName) || draft?.customerName || "",
-    customerPhone:
-      optionalString(payload?.customerPhone) || draft?.customerPhone || "",
+    customerName: optionalString(payload?.customerName),
+    customerPhone: optionalString(payload?.customerPhone),
     paymentMethod: (optionalString(payload?.paymentMethod) ||
-      draft?.paymentMethod ||
       "cash") as Sale["paymentMethod"],
     reference,
-    note: optionalString(payload?.note) || draft?.note || "",
-    followUpMessage:
-      optionalString(payload?.followUpMessage) || draft?.followUpMessage || "",
+    note: optionalString(payload?.note),
+    followUpMessage: optionalString(payload?.followUpMessage),
     soldAt: nowIso(),
     subtotal,
     discount,
     total: Math.max(0, subtotal - discount),
-    bookingCode: draft?.bookingCode,
     items: saleItems,
   };
   db.ledger.unshift(...ledgerEntries);
   db.sales.unshift(sale);
-  db.posDrafts = db.posDrafts.filter((item) => item.id !== draft?.id);
   addAudit(
     db,
     actorId,
@@ -2467,6 +2369,14 @@ function adjustStock(
     createdAt: nowIso(),
   };
   db.ledger.unshift(entry);
+  if (isPositive) {
+    flagPendingMedicationsAvailable(
+      db,
+      actorId,
+      batch.branchId,
+      [batch.medicineId].filter(Boolean),
+    );
+  }
   addAudit(db, actorId, `Posted ${mode}`, "ledger", entry.id, undefined, entry);
 }
 

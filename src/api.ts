@@ -1,6 +1,6 @@
 import type { Database, RegisterInput, SetupInput, User } from "./types";
 
-const TOKEN_KEY = "pharmacy-inventory-session-token";
+const SESSION_HINT_KEY = "pharmacy-inventory-session-active";
 export const TOTALENERGIES_COMPANY_SLUG = "totalenergies-clinic-pharmacy";
 
 type ApiResult<T> = T & {
@@ -11,25 +11,28 @@ type ApiResult<T> = T & {
 };
 
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY) || "";
+  return localStorage.getItem(SESSION_HINT_KEY) || "";
 }
 
-export function storeToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token);
+export function storeToken() {
+  localStorage.setItem(SESSION_HINT_KEY, "true");
 }
 
 export function clearStoredToken() {
-  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(SESSION_HINT_KEY);
+  localStorage.removeItem("pharmacy-inventory-session-token");
 }
 
 async function request<T>(path: string, options: RequestInit = {}) {
-  const token = getStoredToken();
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   headers.set("X-Totalenergies-Company", TOTALENERGIES_COMPANY_SLUG);
 
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(path, {
+    ...options,
+    credentials: "include",
+    headers,
+  });
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
     throw new Error(
@@ -66,7 +69,7 @@ export async function setupWorkspace(input: SetupInput) {
     method: "POST",
     body: JSON.stringify(input),
   });
-  if (result.token) storeToken(result.token);
+  storeToken();
   return result;
 }
 
@@ -80,7 +83,7 @@ export async function login(email: string, password: string) {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
-  if (result.token) storeToken(result.token);
+  storeToken();
   return result;
 }
 

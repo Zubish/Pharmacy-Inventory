@@ -1,4 +1,4 @@
-export type Role = "admin" | "pharmacist" | "inventory" | "cashier" | "viewer";
+export type Role = "admin" | "pharmacist" | "inventory" | "viewer";
 export type Designation =
   | "superintendent_pharmacist"
   | "pharmacist"
@@ -165,7 +165,6 @@ export type Sale = {
   subtotal: number;
   discount: number;
   total: number;
-  bookingCode?: string;
   items: Array<{
     itemType: "medicine" | "product";
     medicineId: string;
@@ -181,31 +180,6 @@ export type Sale = {
     followUpMessage?: string;
     labelInstruction?: string;
   }>;
-};
-
-export type PosDraft = {
-  id: string;
-  userId: string;
-  branchId: string;
-  bookingCode: string;
-  customerName: string;
-  customerPhone: string;
-  paymentMethod: Sale["paymentMethod"];
-  discount: number;
-  note: string;
-  followUpMessage?: string;
-  items: Array<{
-    itemType: "medicine" | "product";
-    itemId: string;
-    quantity: number;
-    requestedQuantity?: number;
-    daysSupply?: number;
-    counselingNote?: string;
-    labelInstruction?: string;
-  }>;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string;
 };
 
 export type PendingMedicationStatus =
@@ -395,7 +369,6 @@ export type Database = {
   ledger: LedgerEntry[];
   receipts: Receipt[];
   sales: Sale[];
-  posDrafts: PosDraft[];
   pendingMedications: PendingMedication[];
   chatMessages: ChatMessage[];
   auditLogs: AuditLog[];

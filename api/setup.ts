@@ -10,6 +10,7 @@ import {
   requireMethod,
   sanitizeDatabase,
   saveRootState,
+  setSessionCookie,
   TOTALENERGIES_ACCOUNT_NAME,
   TOTALENERGIES_COMPANY_SLUG,
 } from "./_shared.js";
@@ -98,7 +99,6 @@ export default async function handler(
       ledger: [],
       receipts: [],
       sales: [],
-      posDrafts: [],
       pendingMedications: [],
       chatMessages: [],
       auditLogs: [],
@@ -176,8 +176,9 @@ export default async function handler(
     root.defaultSlug = tenant.slug;
     await saveRootState(root);
     const session = await createSession(adminId);
+    setSessionCookie(res, session);
     res.status(200).json({
-      ...session,
+      expiresAt: session.expiresAt,
       db: sanitizeDatabase(db),
       currentUser: sanitizeDatabase(db).users[0],
     });
