@@ -103,8 +103,9 @@ export default async function handler(
         upsertMedicines(db, actor.id, actor.role, body.payload);
         break;
       case "upsertProduct":
-        upsertProduct(db, actor.id, actor.role, body.payload);
-        break;
+        throw new Error(
+          "Mart/general retail products are outside the Totalenergies Pharmacy Inventory scope",
+        );
       case "upsertSupplier":
         upsertSupplier(db, actor.id, actor.role, body.payload);
         break;
@@ -1153,87 +1154,6 @@ function medicineDuplicateKey(medicine: Medicine) {
   ]
     .map((part) => part.trim().toLowerCase())
     .join("|");
-}
-
-function upsertProduct(
-  db: Database,
-  actorId: string,
-  actorRole: Role,
-  payload: Record<string, unknown> | undefined,
-) {
-  const actor = db.users.find((user) => user.id === actorId);
-  const productManager =
-    actor &&
-    (canWrite({ ...actor, role: actorRole }) ||
-      canManageBranch(
-        actor,
-        actor.branchIds[0] || actor.managedBranchIds[0] || "",
-        getPrimaryAdminId(db),
-      ));
-  if (!actor || !productManager)
-    throw new Error("You do not have permission to save products");
-  const input = (payload?.record ?? {}) as Partial<Product>;
-  const costPrice = Number(input.costPrice) || 0;
-  const provisionalId = input.id || id("prd");
-  const sellingPrice = pricingPolicy(db.settings).enabled
-    ? roundSellingPrice(
-        costPrice * (1 + pricingPolicy(db.settings).globalMarkupPercent / 100),
-        pricingPolicy(db.settings).roundingRule,
-      )
-    : Number(input.sellingPrice) || 0;
-  if (sellingPrice > 0 && sellingPrice < costPrice)
-    throw new Error(
-      "Selling price must be equal to or greater than cost price",
-    );
-  const barcodes = Array.isArray(input.barcodes)
-    ? input.barcodes
-        .map(String)
-        .map((item) => item.trim())
-        .filter(Boolean)
-    : [];
-  const record: Product = {
-    id: provisionalId,
-    sku: requireString(input.sku, "SKU"),
-    name: requireString(input.name, "Product name"),
-    category: optionalString(input.category) || "General retail",
-    unit: optionalString(input.unit) || "Unit",
-    costPrice,
-    sellingPrice,
-    quantity: Math.max(0, Number(input.quantity) || 0),
-    barcodes,
-    supplierId: optionalString(input.supplierId),
-    active: input.active !== false,
-    createdAt: input.createdAt || nowIso(),
-  };
-  const duplicateSku = db.products.find(
-    (product) =>
-      product.id !== record.id &&
-      product.sku.toLowerCase() === record.sku.toLowerCase(),
-  );
-  if (duplicateSku)
-    throw new Error(`SKU already belongs to ${duplicateSku.name}`);
-  const duplicateBarcode = db.products.find(
-    (product) =>
-      product.id !== record.id &&
-      product.barcodes.some((code) => record.barcodes.includes(code)),
-  );
-  if (duplicateBarcode)
-    throw new Error(`Barcode already belongs to ${duplicateBarcode.name}`);
-  const before = db.products.find((product) => product.id === record.id);
-  db.products = before
-    ? db.products.map((product) =>
-        product.id === record.id ? record : product,
-      )
-    : [record, ...db.products];
-  addAudit(
-    db,
-    actorId,
-    before ? "Updated product record" : "Created product record",
-    "product",
-    record.id,
-    before,
-    record,
-  );
 }
 
 function upsertSupplier(

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = process.cwd();
@@ -11,6 +11,9 @@ const action = read("api/action.ts");
 const shared = read("api/_shared.ts");
 const reset = read("api/auth/request-password-reset.ts");
 const types = read("src/types.ts");
+const readme = read("README.md");
+const blueprint = read("docs/APP_BLUEPRINT.md");
+const modules = read("docs/PHARMACY_INVENTORY_MODULES.md");
 
 function assertAbsent(source, pattern, message) {
   assert.equal(pattern.test(source), false, message);
@@ -35,6 +38,11 @@ assertPresent(
   /role\?\: unknown[\s\S]*role\) === "cashier"/,
   "Legacy cashier users should be detected and dropped during normalization.",
 );
+assertAbsent(
+  readme,
+  /cashiers/i,
+  "Pharmacy Inventory documentation should not list cashiers as a supported role.",
+);
 
 for (const source of [app, action, shared, types]) {
   assertAbsent(
@@ -46,6 +54,34 @@ for (const source of [app, action, shared, types]) {
     source,
     /cashierUserId|cashierDiscountLimitPercent|Only cashiers can complete sales/i,
     "Current Pharmacy Inventory code must not retain cashier role trails.",
+  );
+}
+
+assertAbsent(
+  app,
+  /Retail Products|Add Product|activeView === "products"|\|\s*"products"|Product markup overrides|stockItemType|movementItemType|setStockItemType|setMovementItemType/,
+  "Pharmacy Inventory must not expose a Mart/general retail module.",
+);
+assertPresent(
+  action,
+  /Mart\/general retail products are outside the Totalenergies Pharmacy Inventory scope/,
+  "Retail product writes should be blocked server-side for the Totalenergies scope.",
+);
+assert.equal(
+  existsSync(join(root, "docs/FREEZE_II_CARE_NETWORK_FIGMA_BLUEPRINT.md")),
+  false,
+  "HMO/Care Network documentation belongs to RxLedger, not Pharmacy Inventory.",
+);
+for (const source of [readme, blueprint, modules]) {
+  assertPresent(
+    source,
+    /Clinical Pharmacy Inventory[\s\S]*Prescription Dispensing[\s\S]*Pending Medication[\s\S]*Patient Continuity/s,
+    "Pharmacy Inventory documentation should preserve the Totalenergies module map.",
+  );
+  assertPresent(
+    source,
+    /POS sales[\s\S]*Mart\/general retail[\s\S]*HMO routing[\s\S]*Full EMR replacement/s,
+    "Pharmacy Inventory documentation should explicitly exclude unsupported modules.",
   );
 }
 

@@ -86,7 +86,6 @@ type SubscriptionPlanId = "single-branch" | "smart-pharmacy" | "enterprise";
 type View =
   | "dashboard"
   | "medicines"
-  | "products"
   | "suppliers"
   | "receive"
   | "pos"
@@ -2856,14 +2855,6 @@ function App() {
               flash={flash}
             />
           )}
-          {activeView === "products" && activeBranch && (
-            <ProductsView
-              db={db}
-              canWrite={Boolean(canManagePrices)}
-              executeAction={executeAction}
-              flash={flash}
-            />
-          )}
           {activeView === "suppliers" && (
             <Suppliers
               db={db}
@@ -2925,7 +2916,6 @@ function App() {
               db={db}
               stockRows={dashboardStockRows}
               stockTotals={dashboardStockTotals}
-              activeBranch={canAdmin ? undefined : activeBranch}
             />
           )}
           {activeView === "chat" && (
@@ -7128,330 +7118,6 @@ function IssueStock({
   );
 }
 
-function ProductsView({
-  db,
-  canWrite,
-  executeAction,
-  flash,
-}: {
-  db: Database;
-  canWrite: boolean;
-  executeAction: ExecuteAction;
-  flash: (message: string) => void;
-}) {
-  type ProductDraft = Omit<Product, "barcodes"> & {
-    barcodes: string;
-  };
-  const createBlank = (): ProductDraft => ({
-    id: "",
-    sku: "",
-    name: "",
-    category: "General retail",
-    unit: "Unit",
-    costPrice: 0,
-    sellingPrice: 0,
-    quantity: 0,
-    barcodes: "",
-    supplierId: "",
-    active: true,
-    createdAt: new Date().toISOString(),
-  });
-  const [form, setForm] = useState<ProductDraft>(createBlank);
-  const [query, setQuery] = useState("");
-  const autoPricingOn = pricingPolicy(db.settings).enabled;
-  const visible = db.products
-    .filter((product) => {
-      const text =
-        `${product.sku} ${product.name} ${product.category} ${product.unit} ${product.barcodes.join(" ")}`.toLowerCase();
-      return text.includes(query.toLowerCase());
-    })
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  function edit(product: Product) {
-    setForm({ ...product, barcodes: product.barcodes.join(", ") });
-  }
-
-  function reset() {
-    setForm(createBlank());
-  }
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (!canWrite) return;
-    const record: Product = {
-      ...form,
-      id: form.id || id("prd"),
-      sku: form.sku.trim(),
-      name: form.name.trim(),
-      category: form.category.trim() || "General retail",
-      unit: form.unit.trim() || "Unit",
-      costPrice: Math.max(0, Number(form.costPrice) || 0),
-      sellingPrice: autoPricingOn
-        ? calculatedSellingPrice(
-            db,
-            "product",
-            form.id,
-            Math.max(0, Number(form.costPrice) || 0),
-          ).price
-        : Math.max(0, Number(form.sellingPrice) || 0),
-      quantity: Math.max(0, Number(form.quantity) || 0),
-      barcodes: form.barcodes
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-      supplierId: form.supplierId,
-      createdAt: form.createdAt || new Date().toISOString(),
-    };
-    if (!record.sku || !record.name) {
-      flash("SKU and product name are required");
-      return;
-    }
-    if (record.sellingPrice > 0 && record.sellingPrice < record.costPrice) {
-      flash("Selling price must be equal to or greater than cost price");
-      return;
-    }
-    void executeAction("upsertProduct", { record }, `${record.name} saved`);
-    reset();
-  }
-
-  return (
-    <div className="two-column">
-      <section className="content-section">
-        <div className="section-heading">
-          <div>
-            <h2>Retail Products</h2>
-            <p>Non-medicinal items available for Medicine dispensed.</p>
-          </div>
-          <label className="search-box">
-            <Search size={16} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search products"
-            />
-          </label>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Product</th>
-                <th>Category</th>
-                <th>SKU</th>
-                <th>Stock</th>
-                <th>Cost</th>
-                <th>Selling</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.length ? (
-                visible.map((product) => (
-                  <tr key={product.id}>
-                    <td>
-                      <strong>{product.name}</strong>
-                      <span className="table-subtext">{product.unit}</span>
-                    </td>
-                    <td>{product.category || "-"}</td>
-                    <td>{product.sku}</td>
-                    <td>{number.format(product.quantity)}</td>
-                    <td>{money.format(product.costPrice)}</td>
-                    <td>{money.format(product.sellingPrice)}</td>
-                    <td>
-                      <span
-                        className={product.active ? "pill good" : "pill muted"}
-                      >
-                        {product.active ? "Active" : "Inactive"}
-                      </span>
-                    </td>
-                    <td>
-                      <button
-                        className="icon-button"
-                        type="button"
-                        onClick={() => edit(product)}
-                        disabled={!canWrite}
-                        title="Edit product"
-                      >
-                        <ClipboardList size={16} />
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={8}>
-                    No retail products yet. Add soaps, condoms, drinks, or other
-                    counter items here.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section className="content-section">
-        <div className="section-heading">
-          <div>
-            <h2>{form.id ? "Edit Product" : "Add Product"}</h2>
-            <p>
-              Cost, value, and quantity feed directly into prescription
-              dispensing.
-            </p>
-          </div>
-        </div>
-        {!canWrite && (
-          <div className="form-error">
-            You need pricing access to create or edit retail products.
-          </div>
-        )}
-        <form className="form-grid" onSubmit={submit}>
-          <label className="full">
-            Product name
-            <input
-              required
-              value={form.name}
-              onChange={(event) =>
-                setForm({ ...form, name: event.target.value })
-              }
-              disabled={!canWrite}
-            />
-          </label>
-          <label>
-            SKU
-            <input
-              required
-              value={form.sku}
-              onChange={(event) =>
-                setForm({ ...form, sku: event.target.value })
-              }
-              disabled={!canWrite}
-            />
-          </label>
-          <label>
-            Category
-            <input
-              value={form.category}
-              onChange={(event) =>
-                setForm({ ...form, category: event.target.value })
-              }
-              disabled={!canWrite}
-            />
-          </label>
-          <label>
-            Unit
-            <input
-              value={form.unit}
-              onChange={(event) =>
-                setForm({ ...form, unit: event.target.value })
-              }
-              disabled={!canWrite}
-            />
-          </label>
-          <label>
-            Quantity
-            <input
-              type="number"
-              min="0"
-              value={numberInputValue(form.quantity)}
-              onChange={(event) =>
-                setForm({ ...form, quantity: Number(event.target.value) })
-              }
-              disabled={!canWrite}
-            />
-          </label>
-          <label>
-            Cost price
-            <input
-              type="number"
-              min="0"
-              value={numberInputValue(form.costPrice)}
-              onChange={(event) =>
-                setForm({ ...form, costPrice: Number(event.target.value) })
-              }
-              disabled={!canWrite}
-            />
-          </label>
-          <label>
-            Selling price
-            <input
-              type="number"
-              min="0"
-              value={numberInputValue(
-                autoPricingOn
-                  ? calculatedSellingPrice(
-                      db,
-                      "product",
-                      form.id,
-                      Number(form.costPrice) || 0,
-                    ).price
-                  : form.sellingPrice,
-              )}
-              onChange={(event) =>
-                setForm({ ...form, sellingPrice: Number(event.target.value) })
-              }
-              disabled={!canWrite || autoPricingOn}
-            />
-          </label>
-          <label>
-            Supplier
-            <select
-              value={form.supplierId}
-              onChange={(event) =>
-                setForm({ ...form, supplierId: event.target.value })
-              }
-              disabled={!canWrite}
-            >
-              <option value="">No supplier</option>
-              {db.suppliers.map((supplier) => (
-                <option key={supplier.id} value={supplier.id}>
-                  {supplier.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="full">
-            Barcodes
-            <input
-              value={form.barcodes}
-              onChange={(event) =>
-                setForm({ ...form, barcodes: event.target.value })
-              }
-              disabled={!canWrite}
-              placeholder="Comma-separated barcodes"
-            />
-          </label>
-          <label className="checkbox-row full">
-            <input
-              type="checkbox"
-              checked={form.active}
-              onChange={(event) =>
-                setForm({ ...form, active: event.target.checked })
-              }
-              disabled={!canWrite}
-            />{" "}
-            Active product
-          </label>
-          <div className="form-actions full">
-            <button className="ghost-button" type="button" onClick={reset}>
-              Clear
-            </button>
-            <button
-              className="primary-button"
-              type="submit"
-              disabled={!canWrite}
-            >
-              <Boxes size={17} />
-              Save product
-            </button>
-          </div>
-        </form>
-      </section>
-    </div>
-  );
-}
-
 function POSView({
   db,
   currentUser,
@@ -7686,18 +7352,7 @@ function POSView({
     itemId: string,
   ): SaleOption | undefined {
     if (itemType === "product") {
-      const product = db.products.find((item) => item.id === itemId);
-      if (!product) return undefined;
-      return {
-        itemType: "product",
-        itemId: product.id,
-        title: product.name,
-        meta: `${product.category || "Retail product"} / ${product.unit}`,
-        category: product.category || "Retail products",
-        available: product.quantity,
-        unitPrice: product.sellingPrice,
-        scanCodes: [product.sku, ...product.barcodes].filter(Boolean),
-      };
+      return undefined;
     }
     const medicine = db.medicines.find((item) => item.id === itemId);
     if (!medicine) return undefined;
@@ -9269,22 +8924,14 @@ function Reports({
   db,
   stockRows,
   stockTotals,
-  activeBranch,
 }: {
   db: Database;
   stockRows: StockRow[];
   stockTotals: Map<string, number>;
-  activeBranch?: Branch;
 }) {
   const [report, setReport] = useState<
     "stock" | "movement" | "supplier" | "expiry" | "reorder"
   >("stock");
-  const [stockItemType, setStockItemType] = useState<"medicine" | "product">(
-    "medicine",
-  );
-  const [movementItemType, setMovementItemType] = useState<
-    "medicine" | "product"
-  >("medicine");
   const [movementStartDate, setMovementStartDate] = useState("");
   const [movementEndDate, setMovementEndDate] = useState("");
   const [movementType, setMovementType] = useState("");
@@ -9294,57 +8941,25 @@ function Reports({
   const [supplierFilter, setSupplierFilter] = useState("");
   const [supplierDate, setSupplierDate] = useState("");
   const categories = useMemo(() => {
-    const source =
-      report === "stock"
-        ? stockItemType === "medicine"
-          ? db.medicines.map((medicine) => medicine.category)
-          : db.products.map((product) => product.category)
-        : report === "movement"
-          ? movementItemType === "medicine"
-            ? db.medicines.map((medicine) => medicine.category)
-            : db.products.map((product) => product.category)
-          : [
-              ...db.medicines.map((medicine) => medicine.category),
-              ...db.products.map((product) => product.category),
-            ];
+    const source = db.medicines.map((medicine) => medicine.category);
     return Array.from(new Set(source.filter(Boolean))).sort((a, b) =>
       a.localeCompare(b),
     );
-  }, [db.medicines, db.products, movementItemType, report, stockItemType]);
+  }, [db.medicines]);
 
   const rows: ReportRow[] = useMemo(() => {
     const scopedBatchIds = new Set(stockRows.map((row) => row.batch.id));
-    const scopedBranchIds = new Set(
-      activeBranch
-        ? [activeBranch.id]
-        : db.branches
-            .filter((branch) => branch.active)
-            .map((branch) => branch.id),
-    );
     if (report === "movement") {
       return db.ledger
-        .filter((entry) =>
-          movementItemType === "product"
-            ? entry.itemType === "product"
-            : entry.itemType !== "product",
-        )
-        .filter((entry) =>
-          entry.itemType === "product"
-            ? scopedBranchIds.has(entry.toBranchId || entry.fromBranchId || "")
-            : scopedBatchIds.has(entry.batchId),
-        )
+        .filter((entry) => entry.itemType !== "product")
+        .filter((entry) => scopedBatchIds.has(entry.batchId))
         .filter((entry) => {
-          const medicine =
-            entry.itemType === "product"
-              ? undefined
-              : db.medicines.find((item) => item.id === entry.medicineId);
-          const product =
-            entry.itemType === "product"
-              ? db.products.find((item) => item.id === entry.productId)
-              : undefined;
-          const itemName = medicine?.brandName ?? product?.name ?? "";
+          const medicine = db.medicines.find(
+            (item) => item.id === entry.medicineId,
+          );
+          const itemName = medicine?.brandName ?? "";
           const genericName = medicine?.genericName ?? "";
-          const category = medicine?.category || product?.category || "";
+          const category = medicine?.category || "";
           const semanticType =
             entry.reason === "Medicine dispensed"
               ? "pos"
@@ -9366,18 +8981,10 @@ function Reports({
           );
         })
         .map((entry) => {
-          const product =
-            entry.itemType === "product"
-              ? db.products.find((item) => item.id === entry.productId)
-              : undefined;
-          const medicine =
-            entry.itemType === "product"
-              ? undefined
-              : db.medicines.find((item) => item.id === entry.medicineId);
-          const batch =
-            entry.itemType === "product"
-              ? undefined
-              : db.batches.find((item) => item.id === entry.batchId);
+          const medicine = db.medicines.find(
+            (item) => item.id === entry.medicineId,
+          );
+          const batch = db.batches.find((item) => item.id === entry.batchId);
           const user = db.users.find((item) => item.id === entry.userId);
           const supplier = batch
             ? db.suppliers.find((item) => item.id === batch.supplierId)
@@ -9406,11 +9013,10 @@ function Reports({
             entry.reason === "Medicine dispensed"
               ? db.sales.find((item) => item.reference === entry.reference)
               : undefined;
-          const saleItem = sale?.items.find((item) =>
-            entry.itemType === "product"
-              ? item.productId === entry.productId
-              : item.medicineId === entry.medicineId &&
-                (!item.batchId || item.batchId === entry.batchId),
+          const saleItem = sale?.items.find(
+            (item) =>
+              item.medicineId === entry.medicineId &&
+              (!item.batchId || item.batchId === entry.batchId),
           );
           const semanticType =
             entry.reason === "Medicine dispensed"
@@ -9426,18 +9032,14 @@ function Reports({
           return {
             Date: new Date(entry.createdAt).toLocaleString(),
             Type: semanticType,
-            "Item type": entry.itemType === "product" ? "Product" : "Pharmacy",
-            Medicine: medicine
-              ? medicineReportName(medicine)
-              : (product?.name ?? entry.productId ?? "Unknown"),
+            "Item type": "Pharmacy",
+            Medicine: medicine ? medicineReportName(medicine) : "Unknown",
             Generic: medicine?.genericName ?? "-",
-            Form: medicine?.form ?? product?.unit ?? "-",
+            Form: medicine?.form ?? "-",
             Strength: medicine?.strength ?? "-",
-            Category: medicine?.category || product?.category || "-",
+            Category: medicine?.category || "-",
             Batch: batch?.batchNumber ?? entry.batchNumber ?? "-",
-            Unit: medicine
-              ? medicineSellableUnit(medicine)
-              : (product?.unit ?? "-"),
+            Unit: medicine ? medicineSellableUnit(medicine) : "-",
             Branch: branchName,
             From: from,
             To: to,
@@ -9461,49 +9063,39 @@ function Reports({
             (!supplierDate || receipt.receivedAt.slice(0, 10) === supplierDate),
         )
         .flatMap((receipt) =>
-          receipt.items.map((item) => {
-            const batch =
-              item.itemType === "product"
-                ? undefined
-                : db.batches.find((entry) => entry.id === item.batchId);
-            const medicine =
-              item.itemType === "product"
-                ? undefined
-                : db.medicines.find((entry) => entry.id === item.medicineId);
-            const product =
-              item.itemType === "product"
-                ? db.products.find((entry) => entry.id === item.productId)
-                : undefined;
-            const supplier = db.suppliers.find(
-              (entry) => entry.id === receipt.supplierId,
-            );
-            return {
-              Date: new Date(receipt.receivedAt).toLocaleString(),
-              Supplier: supplier?.name ?? receipt.supplierId,
-              Invoice: receipt.invoiceRef,
-              "Item type": item.itemType === "product" ? "Product" : "Pharmacy",
-              Medicine:
-                medicine?.brandName ??
-                product?.name ??
-                item.medicineId ??
-                item.productId,
-              Generic: medicine?.genericName ?? "-",
-              Form: medicine?.form ?? product?.unit ?? "-",
-              Strength: medicine?.strength ?? "-",
-              Category: medicine?.category || product?.category || "-",
-              Batch: batch?.batchNumber ?? item.batchNumber ?? item.batchId,
-              Expiry: batch?.expiryDate ?? item.expiryDate ?? "-",
-              Unit: medicine
-                ? medicineSellableUnit(medicine)
-                : (product?.unit ?? "-"),
-              Quantity: item.quantity,
-              "Cost / Least Unit": item.unitCost,
-              Branch: getBranchName(
-                db,
-                batch?.branchId ?? item.branchId ?? "main",
-              ),
-            };
-          }),
+          receipt.items
+            .filter((item) => item.itemType !== "product")
+            .map((item) => {
+              const batch = db.batches.find(
+                (entry) => entry.id === item.batchId,
+              );
+              const medicine = db.medicines.find(
+                (entry) => entry.id === item.medicineId,
+              );
+              const supplier = db.suppliers.find(
+                (entry) => entry.id === receipt.supplierId,
+              );
+              return {
+                Date: new Date(receipt.receivedAt).toLocaleString(),
+                Supplier: supplier?.name ?? receipt.supplierId,
+                Invoice: receipt.invoiceRef,
+                "Item type": "Pharmacy",
+                Medicine: medicine?.brandName ?? item.medicineId,
+                Generic: medicine?.genericName ?? "-",
+                Form: medicine?.form ?? "-",
+                Strength: medicine?.strength ?? "-",
+                Category: medicine?.category || "-",
+                Batch: batch?.batchNumber ?? item.batchNumber ?? item.batchId,
+                Expiry: batch?.expiryDate ?? item.expiryDate ?? "-",
+                Unit: medicine ? medicineSellableUnit(medicine) : "-",
+                Quantity: item.quantity,
+                "Cost / Least Unit": item.unitCost,
+                Branch: getBranchName(
+                  db,
+                  batch?.branchId ?? item.branchId ?? "main",
+                ),
+              };
+            }),
         );
     }
     if (report === "expiry") {
@@ -9545,39 +9137,6 @@ function Reports({
           Manufacturer: medicine.manufacturer,
         }));
     }
-    if (stockItemType === "product") {
-      return db.products
-        .filter((product) => product.active)
-        .filter(
-          (product) =>
-            (!medicineFilter ||
-              product.name
-                .toLowerCase()
-                .includes(medicineFilter.toLowerCase()) ||
-              product.sku
-                .toLowerCase()
-                .includes(medicineFilter.toLowerCase())) &&
-            (!categoryFilter || product.category === categoryFilter),
-        )
-        .map((product) => {
-          const supplier = db.suppliers.find(
-            (item) => item.id === product.supplierId,
-          );
-          return {
-            SKU: product.sku,
-            Product: product.name,
-            Category: product.category || "-",
-            Unit: product.unit,
-            Quantity: product.quantity,
-            "Unit Cost": product.costPrice,
-            "Selling Price": product.sellingPrice,
-            "Cost Value": product.quantity * product.costPrice,
-            Supplier: supplier?.name ?? "-",
-            Branch: activeBranch?.name ?? "Pharmacy stock",
-            Status: product.active ? "Active" : "Inactive",
-          };
-        });
-    }
     return stockRows
       .filter(
         (row) =>
@@ -9612,17 +9171,14 @@ function Reports({
         Location: row.batch.location,
       }));
   }, [
-    activeBranch,
     categoryFilter,
     db,
     genericFilter,
     medicineFilter,
     movementEndDate,
-    movementItemType,
     movementStartDate,
     movementType,
     report,
-    stockItemType,
     stockRows,
     stockTotals,
     supplierDate,
@@ -9722,10 +9278,9 @@ function Reports({
         <>
           <div className="report-mode-switch">
             <button
-              className={movementItemType === "medicine" ? "active" : ""}
+              className="active"
               type="button"
               onClick={() => {
-                setMovementItemType("medicine");
                 setCategoryFilter("");
                 setMedicineFilter("");
                 setGenericFilter("");
@@ -9767,27 +9322,21 @@ function Reports({
               </select>
             </label>
             <label>
-              {movementItemType === "medicine" ? "Brand" : "Product"}
+              Brand
               <input
                 value={medicineFilter}
                 onChange={(event) => setMedicineFilter(event.target.value)}
-                placeholder={
-                  movementItemType === "medicine"
-                    ? "Brand name"
-                    : "Product name"
-                }
+                placeholder="Brand name"
               />
             </label>
-            {movementItemType === "medicine" && (
-              <label>
-                Generic
-                <input
-                  value={genericFilter}
-                  onChange={(event) => setGenericFilter(event.target.value)}
-                  placeholder="Generic name"
-                />
-              </label>
-            )}
+            <label>
+              Generic
+              <input
+                value={genericFilter}
+                onChange={(event) => setGenericFilter(event.target.value)}
+                placeholder="Generic name"
+              />
+            </label>
             <label>
               Category
               <select
@@ -9809,10 +9358,9 @@ function Reports({
         <>
           <div className="report-mode-switch">
             <button
-              className={stockItemType === "medicine" ? "active" : ""}
+              className="active"
               type="button"
               onClick={() => {
-                setStockItemType("medicine");
                 setCategoryFilter("");
                 setMedicineFilter("");
                 setGenericFilter("");
@@ -9824,27 +9372,21 @@ function Reports({
           </div>
           <div className="report-filters">
             <label>
-              {stockItemType === "medicine" ? "Brand" : "Product"}
+              Brand
               <input
                 value={medicineFilter}
                 onChange={(event) => setMedicineFilter(event.target.value)}
-                placeholder={
-                  stockItemType === "medicine"
-                    ? "Brand name or SKU"
-                    : "Product name or SKU"
-                }
+                placeholder="Brand name or SKU"
               />
             </label>
-            {stockItemType === "medicine" && (
-              <label>
-                Generic
-                <input
-                  value={genericFilter}
-                  onChange={(event) => setGenericFilter(event.target.value)}
-                  placeholder="Generic name"
-                />
-              </label>
-            )}
+            <label>
+              Generic
+              <input
+                value={genericFilter}
+                onChange={(event) => setGenericFilter(event.target.value)}
+                placeholder="Generic name"
+              />
+            </label>
             <label>
               Category
               <select
@@ -11368,9 +10910,6 @@ function SettingsView({
   const [categoryMarkupText, setCategoryMarkupText] = useState(() =>
     markupMapToText(db.settings.categoryMarkupPercentages),
   );
-  const [productMarkupText, setProductMarkupText] = useState(() =>
-    markupMapToText(db.settings.productMarkupPercentages),
-  );
   const [dosageFormLabelText, setDosageFormLabelText] = useState(() =>
     dosageFormRulesToText(db.settings.dosageFormLabelRules),
   );
@@ -11399,7 +10938,7 @@ function SettingsView({
       {
         ...form,
         categoryMarkupPercentages: textToMarkupMap(categoryMarkupText),
-        productMarkupPercentages: textToMarkupMap(productMarkupText),
+        productMarkupPercentages: {},
         dosageFormLabelRules: textToDosageFormRules(dosageFormLabelText),
         medicineLabelRules: textToMedicineLabelRules(medicineLabelText),
       },
@@ -11740,23 +11279,13 @@ function SettingsView({
           </div>
           <div className="pricing-rule-editors">
             <label>
-              Category markup rules
+              Medicine category markup rules
               <textarea
                 value={categoryMarkupText}
                 onChange={(event) => setCategoryMarkupText(event.target.value)}
                 disabled={!canAdmin}
                 rows={4}
                 placeholder={"analgesics = 35\nantibiotics = 25"}
-              />
-            </label>
-            <label>
-              Product markup overrides
-              <textarea
-                value={productMarkupText}
-                onChange={(event) => setProductMarkupText(event.target.value)}
-                disabled={!canAdmin}
-                rows={4}
-                placeholder={"pcm-500 = 40\nmedicine:med_123 = 22"}
               />
             </label>
           </div>

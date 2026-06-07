@@ -12,7 +12,18 @@ The app is based on the newer RxLedger operating framework, but this repo is no 
 - Keeps staff/patient details, medication labels, therapy days, refill follow-up notes, and dispensing history.
 - Maintains receiving review calculations for container packs, unit cost, markup, selling/cost price, and stock value.
 - Provides reports for stock on hand, movement, expiry risk, dispensing cost, suppliers, and audit history.
-- Supports role-based access for admins, pharmacists, inventory officers, cashiers, and viewers.
+- Supports role-based access for admins, pharmacists, pharmacy technicians, and viewers/auditors.
+
+## Module Structure
+
+The Totalenergies build is implemented as focused clinical pharmacy modules:
+
+- **Clinical Pharmacy Inventory**: medicine catalog, batch stock, receiving, FEFO stock movement, expiry, and reorder alerts.
+- **Prescription Dispensing**: pharmacist-led medicine dispensing, labels/counseling notes, supplied quantities, and dispensing history.
+- **Pending Medication**: automatic records for prescription medicines saved with `0` supplied quantity because stock is unavailable.
+- **Patient Continuity**: patient lookup, medication history, refill follow-up, and Pending Medication records on the patient page.
+- **Clinical Safety Support**: future pharmacist-assistive review prompts for duplicate therapy, interaction cautions, repeated antibiotic use, and misuse-risk patterns.
+- **Audit, Access, And Governance**: branch/site scope, super admin authority, viewer restrictions, reports, security events, and audit trail.
 
 ## Totalenergies Scope
 
@@ -26,6 +37,18 @@ The previous POS screen is now presented as **Prescriptions**. The workflow stil
 - dispensing history supports patient continuity and pharmacy accountability.
 
 The Mart section and public workspace/tenant selection flow are not part of this Totalenergies build.
+
+The following modules are explicitly out of scope for Pharmacy Inventory:
+
+- POS sales.
+- Mart/general retail.
+- Multi-tenant marketplace logic.
+- HMO routing.
+- Multi-pharmacy network.
+- Patient app.
+- Full EMR replacement.
+
+See `docs/PHARMACY_INVENTORY_MODULES.md` and `docs/APP_BLUEPRINT.md` before planning major changes.
 
 ## Development
 
