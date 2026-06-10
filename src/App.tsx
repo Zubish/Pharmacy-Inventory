@@ -638,6 +638,14 @@ function safeStorageKey(db: Database, currentUser: User, suffix: string) {
   return `totalenergies:${db.settings.companySlug || db.settings.companyCode || "file"}:${currentUser.id}:${suffix}`;
 }
 
+function slugifyCompany(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
 function getStoredNumber(key: string, fallback = 0) {
   if (typeof window === "undefined") return fallback;
   const value = Number(window.localStorage.getItem(key));
@@ -651,6 +659,12 @@ function getStoredBoolean(key: string) {
 
 function setStoredValue(key: string, value: string) {
   if (typeof window !== "undefined") window.localStorage.setItem(key, value);
+}
+
+function getWorkspaceUrl(settings: AppSettings) {
+  const slug = settings.companySlug || slugifyCompany(settings.accountName);
+  if (typeof window === "undefined") return slug ? `/${slug}` : "";
+  return slug ? `${window.location.origin}/${slug}` : window.location.origin;
 }
 
 function medicineMeta(medicine: Medicine) {
@@ -1782,6 +1796,82 @@ function isChatMessageVisible(message: ChatMessage, currentUser: User) {
   return true;
 }
 
+function receiptMedicationSummary(db: Database, receipt: Receipt) {
+  const medicineItems = receipt.items.filter(
+    (item) => (item.itemType ?? "medicine") === "medicine" && item.medicineId,
+  );
+  const summary = medicineItems
+    .slice(0, 3)
+    .map((item) => {
+      const medicine = db.medicines.find((entry) => entry.id === item.medicineId);
+      const unit = medicine ? medicineSellableUnit(medicine) : "units";
+      return `${medicine ? medicineOptionLabel(medicine) : "Medicine"} (${number.format(item.quantity)} ${unit})`;
+    })
+    .join(", ");
+  return {
+    medicineItems,
+    summary: medicineItems.length > 3 ? `${summary}, +${medicineItems.length - 3} more` : summary,
+  };
+}
+
+function receivedReceiptNotification(
+  db: Database,
+  receipt: Receipt,
+  activeBranch?: Branch,
+): AppNotification | undefined {
+  const { medicineItems, summary } = receiptMedicationSummary(db, receipt);
+  if (!medicineItems.length) return undefined;
+  const branchId = medicineItems.find((item) => item.branchId)?.branchId || activeBranch?.id || "main";
+  const branchName = getBranchName(db, branchId);
+  const supplier = db.suppliers.find((item) => item.id === receipt.supplierId);
+  const receiver = getUserName(db, receipt.userId);
+  const ownBranch = activeBranch?.id === branchId;
+  return {
+    id: `received-receipt-${receipt.id}`,
+    tone: "good",
+    title: ownBranch
+      ? `New medication received in ${branchName}`
+      : `New medication received at ${branchName}`,
+    detail: `${summary}. ${supplier ? `Source: ${supplier.name}. ` : ""}Received by ${receiver} on ${new Date(receipt.receivedAt).toLocaleString()}.`,
+    view: "receive",
+    createdAt: receipt.receivedAt,
+  };
+}
+
+function receivedRequisitionNotification(
+  db: Database,
+  request: Requisition,
+  activeBranch?: Branch,
+): AppNotification | undefined {
+  if (
+    request.status !== "received" ||
+    !request.receivedAt ||
+    !request.items.some((item) => (item.receivedQuantity ?? 0) > 0)
+  ) return undefined;
+  const destination = getBranchName(db, request.requestingBranchId);
+  const source = getBranchName(db, request.sourceBranchId);
+  const ownBranch = activeBranch?.id === request.requestingBranchId;
+  const receivedItems = request.items.filter((item) => (item.receivedQuantity ?? 0) > 0);
+  const summary = receivedItems
+    .slice(0, 3)
+    .map((item) => {
+      const medicine = db.medicines.find((entry) => entry.id === item.medicineId);
+      const unit = medicine ? medicineSellableUnit(medicine) : "units";
+      return `${medicine ? medicineOptionLabel(medicine) : "Medicine"} (${number.format(item.receivedQuantity ?? 0)} ${unit})`;
+    })
+    .join(", ");
+  return {
+    id: `received-requisition-${request.id}`,
+    tone: "good",
+    title: ownBranch
+      ? `Internal medication received in ${destination}`
+      : `Internal medication received at ${destination}`,
+    detail: `${summary}${receivedItems.length > 3 ? `, +${receivedItems.length - 3} more` : ""}. Originating branch: ${source}. Received by ${getUserName(db, request.receivedBy)} on ${new Date(request.receivedAt).toLocaleString()}.`,
+    view: "medicines",
+    createdAt: request.receivedAt,
+  };
+}
+
 function getQuestSteps(db: Database, currentUser: User): QuestStep[] {
   const superAdmin = isSuperAdmin(db, currentUser);
   const managesBranch = db.branches.some((branch) =>
@@ -2035,6 +2125,18 @@ function buildNotifications(
     });
   });
 
+  db.receipts
+    .map((receipt) => receivedReceiptNotification(db, receipt, activeBranch))
+    .filter((notification): notification is AppNotification => Boolean(notification))
+    .slice(0, 12)
+    .forEach((notification) => notifications.push(notification));
+
+  db.requisitions
+    .map((request) => receivedRequisitionNotification(db, request, activeBranch))
+    .filter((notification): notification is AppNotification => Boolean(notification))
+    .slice(0, 12)
+    .forEach((notification) => notifications.push(notification));
+
   pendingMedicationAlerts.forEach((item) => {
     notifications.push({
       id: `pending-medication-${item.id}`,
@@ -2234,7 +2336,7 @@ function App() {
     currentUser && activeBranch
       ? canWriteBranch(db, currentUser, activeBranch.id)
       : false;
-  const notifications = useMemo(
+  const rawNotifications = useMemo(
     () =>
       currentUser
         ? buildNotifications(
@@ -2253,6 +2355,25 @@ function App() {
       notificationStockTotals,
     ],
   );
+  const notificationDismissedKey = currentUser
+    ? safeStorageKey(db, currentUser, "dismissed-notifications")
+    : "";
+  const [dismissedNotificationsByKey, setDismissedNotificationsByKey] = useState<Record<string, string[]>>({});
+  const dismissedNotificationIds = useMemo(() => {
+    if (!notificationDismissedKey || typeof window === "undefined") return [];
+    const cached = dismissedNotificationsByKey[notificationDismissedKey];
+    if (cached) return cached;
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(notificationDismissedKey) || "[]");
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  }, [dismissedNotificationsByKey, notificationDismissedKey]);
+  const notifications = useMemo(() => {
+    const dismissed = new Set(dismissedNotificationIds);
+    return rawNotifications.filter((notification) => !dismissed.has(notification.id));
+  }, [dismissedNotificationIds, rawNotifications]);
 
   useEffect(() => {
     async function load() {
@@ -2456,6 +2577,18 @@ function App() {
       setSidebarOpen(false);
       setSidebarCollapsed(true);
     }
+  }
+
+  function openNotification(notification: AppNotification) {
+    if (notificationDismissedKey && typeof window !== "undefined") {
+      setDismissedNotificationsByKey((currentByKey) => {
+        const current = currentByKey[notificationDismissedKey] ?? dismissedNotificationIds;
+        const next = Array.from(new Set([...current, notification.id])).slice(-80);
+        window.localStorage.setItem(notificationDismissedKey, JSON.stringify(next));
+        return { ...currentByKey, [notificationDismissedKey]: next };
+      });
+    }
+    navigate(notification.view);
   }
 
   function switchActiveBranch(branchId: string) {
@@ -2928,7 +3061,7 @@ function App() {
           {activeView === "notifications" && (
             <NotificationsView
               notifications={notifications}
-              setActiveView={setActiveView}
+              openNotification={openNotification}
             />
           )}
           {activeView === "audit" && <Audit db={db} />}
@@ -2962,6 +3095,7 @@ function App() {
               currentUser={currentUser}
               canAdmin={canAdmin}
               executeAction={executeAction}
+              flash={flash}
             />
           )}
         </div>
@@ -10121,10 +10255,10 @@ function ChatView({
 
 function NotificationsView({
   notifications,
-  setActiveView,
+  openNotification,
 }: {
   notifications: AppNotification[];
-  setActiveView: (view: View) => void;
+  openNotification: (notification: AppNotification) => void;
 }) {
   return (
     <section className="content-section">
@@ -10132,8 +10266,8 @@ function NotificationsView({
         <div>
           <h2>Notification Center</h2>
           <p>
-            Chat, access, stock-out, low-stock, expired, and near-expiry prompts
-            in one place.
+            Chat, access, received stock, stock-out, low-stock, expired, and
+            near-expiry prompts in one place.
           </p>
         </div>
       </div>
@@ -10144,7 +10278,7 @@ function NotificationsView({
               className={`notification-item alert-item ${notification.tone}`}
               key={notification.id}
               type="button"
-              onClick={() => setActiveView(notification.view)}
+              onClick={() => openNotification(notification)}
             >
               <NotificationIcon tone={notification.tone} />
               <div>
@@ -10899,11 +11033,13 @@ function SettingsView({
   currentUser,
   canAdmin,
   executeAction,
+  flash,
 }: {
   db: Database;
   currentUser: User;
   canAdmin: boolean;
   executeAction: ExecuteAction;
+  flash: (message: string) => void;
 }) {
   const [form, setForm] = useState(db.settings);
   const profileDesignation = currentUser.designation ?? "pharmacy_technician";
@@ -10916,6 +11052,17 @@ function SettingsView({
   const [medicineLabelText, setMedicineLabelText] = useState(() =>
     medicineLabelRulesToText(db.settings.medicineLabelRules),
   );
+  const workspaceUrl = getWorkspaceUrl(db.settings);
+
+  async function copyAccessValue(label: string, value: string) {
+    if (!value) return;
+    try {
+      await navigator.clipboard.writeText(value);
+      flash(`${label} copied`);
+    } catch {
+      flash(`Copy ${label.toLowerCase()}: ${value}`);
+    }
+  }
 
   async function uploadLogo(file: File) {
     if (file.size > 500_000) {
@@ -10952,7 +11099,7 @@ function SettingsView({
         <div>
           <h2>Totalenergies Settings</h2>
           <p>
-            Your staff profile stays separate from admin-assigned access roles.
+            Your staff profile, workspace access, and admin-managed clinic settings.
           </p>
         </div>
       </div>
@@ -10989,6 +11136,31 @@ function SettingsView({
                 ? "Global Access"
                 : accessIdentityLabels[profileDesignation]}
             </small>
+          </div>
+        </div>
+      </section>
+      <section className="workspace-access-card">
+        <div>
+          <span className="eyebrow">Workspace access</span>
+          <h3>URL and access code</h3>
+          <p>Approved clinic pharmacy staff can copy these details to reach the correct company file before signing in.</p>
+        </div>
+        <div className="workspace-access-grid">
+          <div className="copy-value-card">
+            <span>Workspace URL</span>
+            <strong>{workspaceUrl}</strong>
+            <button className="ghost-button" type="button" onClick={() => void copyAccessValue("Workspace URL", workspaceUrl)}>
+              <ClipboardList size={15} />
+              Copy URL
+            </button>
+          </div>
+          <div className="copy-value-card">
+            <span>Workspace code</span>
+            <strong>{db.settings.companyCode || "Not generated yet"}</strong>
+            <button className="ghost-button" type="button" onClick={() => void copyAccessValue("Workspace code", db.settings.companyCode)} disabled={!db.settings.companyCode}>
+              <ClipboardList size={15} />
+              Copy code
+            </button>
           </div>
         </div>
       </section>
