@@ -21,7 +21,7 @@ The Totalenergies build is implemented as focused clinical pharmacy modules:
 - **Clinical Pharmacy Inventory**: medicine catalog, batch stock, receiving, FEFO stock movement, expiry, and reorder alerts.
 - **Prescription Dispensing**: pharmacist-led medicine dispensing, labels/counseling notes, supplied quantities, and dispensing history.
 - **Pending Medication**: automatic records for prescription medicines saved with `0` supplied quantity because stock is unavailable.
-- **Patient Continuity**: patient lookup, medication history, refill follow-up, and Pending Medication records on the patient page.
+- **Prescription Continuity / Patient Continuity**: patient lookup, medication history, refill follow-up, Pending Medication records, grouped continuity alerts, and branch-aware stock suggestions.
 - **Clinical Safety Support**: future pharmacist-assistive review prompts for duplicate therapy, interaction cautions, repeated antibiotic use, and misuse-risk patterns.
 - **Audit, Access, And Governance**: branch/site scope, super admin authority, viewer restrictions, reports, security events, and audit trail.
 

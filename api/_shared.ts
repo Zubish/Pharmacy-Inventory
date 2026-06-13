@@ -272,6 +272,10 @@ type PendingMedication = {
   recordedBy: string;
   requestedAt: string;
   updatedAt: string;
+  preferredBranchId?: string;
+  matchedBranchId?: string;
+  availableElsewhereQuantity?: number;
+  matchedAt?: string;
   availableAt?: string;
   availableQuantity?: number;
   contactedAt?: string;
@@ -1182,6 +1186,11 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
           status,
           requestedAt: item.requestedAt || item.updatedAt || nowIso(),
           updatedAt: item.updatedAt || item.requestedAt || nowIso(),
+          preferredBranchId: item.preferredBranchId || item.branchId || undefined,
+          matchedBranchId: item.matchedBranchId || undefined,
+          availableElsewhereQuantity:
+            Number(item.availableElsewhereQuantity) || undefined,
+          matchedAt: item.matchedAt || undefined,
           availableQuantity: Number(item.availableQuantity) || undefined,
           availableAt: item.availableAt || undefined,
           contactedAt: item.contactedAt || undefined,

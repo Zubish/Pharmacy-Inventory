@@ -27,6 +27,7 @@ import {
   LayoutDashboard,
   Lock,
   LogOut,
+  MapPin,
   MessageSquare,
   Minus,
   PackageCheck,
@@ -299,6 +300,10 @@ type PendingMedication = {
   recordedBy: string;
   requestedAt: string;
   updatedAt: string;
+  preferredBranchId?: string;
+  matchedBranchId?: string;
+  availableElsewhereQuantity?: number;
+  matchedAt?: string;
   availableAt?: string;
   availableQuantity?: number;
   contactedAt?: string;
@@ -1118,6 +1123,66 @@ function getMedicineSellingPrice(rows: StockRow[], medicineId: string) {
 
 function getActiveBranches(db: Database) {
   return db.branches.filter((branch) => branch.active);
+}
+
+function branchAddressScore(reference: Branch | undefined, candidate: Branch) {
+  if (!reference?.address || !candidate.address) return 0;
+  const referenceTokens = new Set(
+    reference.address
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length > 3),
+  );
+  return candidate.address
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => referenceTokens.has(token)).length;
+}
+
+function branchMapHref(branch: Branch) {
+  const query = [branch.name, branch.address].filter(Boolean).join(", ");
+  return query
+    ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`
+    : "";
+}
+
+function getMedicineBranchAvailability(
+  db: Database,
+  rows: StockRow[],
+  medicineId: string,
+  referenceBranch?: Branch,
+) {
+  const totals = new Map<string, number>();
+  rows
+    .filter(
+      (row) =>
+        row.medicine.id === medicineId &&
+        row.quantity > 0 &&
+        row.daysToExpiry >= 0,
+    )
+    .forEach((row) => {
+      totals.set(row.batch.branchId, (totals.get(row.batch.branchId) ?? 0) + row.quantity);
+    });
+  return [...totals.entries()]
+    .map(([branchId, quantity]) => {
+      const branch = db.branches.find((item) => item.id === branchId);
+      return branch
+        ? {
+            branch,
+            quantity,
+            mapHref: branchMapHref(branch),
+            score: branchAddressScore(referenceBranch, branch),
+          }
+        : undefined;
+    })
+    .filter((entry): entry is { branch: Branch; quantity: number; mapHref: string; score: number } =>
+      Boolean(entry),
+    )
+    .sort((a, b) => {
+      if (a.branch.id === referenceBranch?.id) return -1;
+      if (b.branch.id === referenceBranch?.id) return 1;
+      return b.score - a.score || b.quantity - a.quantity || a.branch.name.localeCompare(b.branch.name);
+    });
 }
 
 function getBranchName(db: Database, branchId: string) {
@@ -2026,9 +2091,36 @@ function buildNotifications(
       request.status === "pending" &&
       canViewBranch(db, currentUser, request.branchId),
   );
-  const pendingMedicationAlerts = db.pendingMedications.filter(
+  function alternateStockForPendingNotification(item: PendingMedication) {
+    if (!item.medicineId) return undefined;
+    const sourceBranch = db.branches.find((branch) => branch.id === item.branchId);
+    const options = getMedicineBranchAvailability(
+      db,
+      stockRows,
+      item.medicineId,
+      sourceBranch,
+    ).filter((entry) => entry.branch.id !== item.branchId);
+    return (
+      options.find((entry) => entry.branch.id === item.matchedBranchId) ??
+      options[0]
+    );
+  }
+  const availablePendingMedicationAlerts = db.pendingMedications.filter(
     (item) =>
       item.status === "available" &&
+      canViewBranch(db, currentUser, item.branchId) &&
+      (isSuperAdmin(db, currentUser) ||
+        canManageBranch(db, currentUser, item.branchId) ||
+        (currentUser.role === "pharmacist" &&
+          hasActiveBranchAssignment(currentUser, item.branchId))),
+  );
+  const elsewherePendingMedicationAlerts = db.pendingMedications.filter(
+    (item) =>
+      item.status !== "available" &&
+      item.status !== "fulfilled" &&
+      item.status !== "cancelled" &&
+      Boolean(item.matchedBranchId) &&
+      Boolean(alternateStockForPendingNotification(item)) &&
       canViewBranch(db, currentUser, item.branchId) &&
       (isSuperAdmin(db, currentUser) ||
         canManageBranch(db, currentUser, item.branchId) ||
@@ -2137,17 +2229,36 @@ function buildNotifications(
     .slice(0, 12)
     .forEach((notification) => notifications.push(notification));
 
-  pendingMedicationAlerts.forEach((item) => {
+  if (availablePendingMedicationAlerts.length) {
+    const latest = [...availablePendingMedicationAlerts].sort((a, b) =>
+      (b.availableAt ?? b.updatedAt).localeCompare(a.availableAt ?? a.updatedAt),
+    )[0];
     notifications.push({
-      id: `pending-medication-${item.id}`,
+      id: `pending-medication-available-${latest.branchId}`,
       tone: "good",
-      title: `${item.medicationName || item.genericName} is now available`,
-      detail: `${item.patientName}${item.patientPhone ? ` / ${item.patientPhone}` : ""} is waiting for ${number.format(item.quantity)} ${item.unit}.`,
-      view: "medicines",
-      branchId: item.branchId,
-      createdAt: item.availableAt ?? item.updatedAt,
+      title: `${availablePendingMedicationAlerts.length} pending prescription${availablePendingMedicationAlerts.length === 1 ? "" : "s"} can be completed`,
+      detail: `${latest.medicationName || latest.genericName} for ${latest.patientName} is now in stock at ${getBranchName(db, latest.branchId)}.`,
+      view: "patients",
+      branchId: latest.branchId,
+      createdAt: latest.availableAt ?? latest.updatedAt,
     });
-  });
+  }
+
+  if (elsewherePendingMedicationAlerts.length) {
+    const latest = [...elsewherePendingMedicationAlerts].sort((a, b) =>
+      (b.matchedAt ?? b.updatedAt).localeCompare(a.matchedAt ?? a.updatedAt),
+    )[0];
+    const alternate = alternateStockForPendingNotification(latest);
+    notifications.push({
+      id: `pending-medication-elsewhere-${latest.branchId}`,
+      tone: "info",
+      title: `${elsewherePendingMedicationAlerts.length} pending prescription${elsewherePendingMedicationAlerts.length === 1 ? "" : "s"} found at another site`,
+      detail: `${latest.medicationName || latest.genericName} for ${latest.patientName} is available at ${alternate?.branch.name ?? getBranchName(db, latest.matchedBranchId ?? "")}.`,
+      view: "patients",
+      branchId: latest.branchId,
+      createdAt: latest.matchedAt ?? latest.updatedAt,
+    });
+  }
 
   handledRequisitions.forEach((request) => {
     notifications.push({
@@ -3011,6 +3122,7 @@ function App() {
               currentUser={currentUser}
               activeBranch={activeBranch}
               stockRows={activeBranchStockRows}
+              workspaceStockRows={stockRows}
               canSell={Boolean(canSell)}
               executeAction={executeAction}
               flash={flash}
@@ -5872,14 +5984,53 @@ function PendingMedicationRecords({
   const availableCount = branchRecords.filter(
     (item) => item.status === "available",
   ).length;
+  const elsewhereCount = branchRecords.filter(
+    (item) =>
+      item.status !== "available" &&
+      item.status !== "fulfilled" &&
+      item.status !== "cancelled" &&
+      Boolean(item.matchedBranchId),
+  ).length;
   const contactedCount = branchRecords.filter(
     (item) => item.status === "contacted",
   ).length;
 
+  function alternateStockFor(item: PendingMedication) {
+    const medicine = item.medicineId
+      ? db.medicines.find((entry) => entry.id === item.medicineId)
+      : undefined;
+    if (!medicine) {
+      const branch = item.matchedBranchId
+        ? db.branches.find((entry) => entry.id === item.matchedBranchId)
+        : undefined;
+      return branch
+        ? {
+            branch,
+            quantity: item.availableElsewhereQuantity ?? 0,
+            mapHref: branchMapHref(branch),
+          }
+        : undefined;
+    }
+    const sourceBranch = db.branches.find((entry) => entry.id === item.branchId);
+    const alternateOptions = getMedicineBranchAvailability(
+      db,
+      stockRows,
+      medicine.id,
+      sourceBranch,
+    ).filter((entry) => entry.branch.id !== item.branchId);
+    return (
+      alternateOptions.find((entry) => entry.branch.id === item.matchedBranchId) ??
+      alternateOptions[0]
+    );
+  }
+
   function messageFor(item: PendingMedication) {
+    const alternate = alternateStockFor(item);
     const availableLine =
       item.status === "available"
         ? `${item.medicationName} is now available at ${getBranchName(db, item.branchId)}. We have ${number.format(item.availableQuantity ?? 0)} ${item.unit || "unit"} available.`
+        : alternate
+          ? `${item.medicationName} is not yet available at ${getBranchName(db, item.branchId)}, but ${alternate.branch.name} currently has ${number.format(alternate.quantity)} ${item.unit || "unit"}. Please contact the clinic pharmacy so we can guide collection or arrange site transfer.`
         : `We are following up on your request for ${item.medicationName}.`;
     return patientCareMessage(
       db.settings.accountName,
@@ -5929,10 +6080,10 @@ function PendingMedicationRecords({
     <section className="content-section pending-medication-section full">
       <div className="section-heading">
         <div>
-          <h2>Pending Medication</h2>
+          <h2>Prescription Continuity</h2>
           <p>
-            Generated from Prescription lines saved with zero supplied quantity
-            because the medicine was unavailable.
+            Pending Medication records generated from Prescription lines saved
+            with zero supplied quantity because the medicine was unavailable.
           </p>
         </div>
         <div className="pending-medication-summary">
@@ -5943,14 +6094,18 @@ function PendingMedicationRecords({
             <strong>{number.format(availableCount)}</strong> available
           </span>
           <span>
+            <strong>{number.format(elsewhereCount)}</strong> elsewhere
+          </span>
+          <span>
             <strong>{number.format(contactedCount)}</strong> contacted
           </span>
         </div>
       </div>
       <div className="pending-medication-tools">
         <span>
-          Records are created automatically from Prescriptions and turn
-          available when matching stock is received.
+          Records are created automatically from Prescriptions, become
+          fulfillable only when this branch receives stock, and can show nearby
+          Totalenergies sites that currently have stock.
         </span>
       </div>
       <div className="pending-medication-list">
@@ -5959,6 +6114,7 @@ function PendingMedicationRecords({
             const medicine = item.medicineId
               ? db.medicines.find((entry) => entry.id === item.medicineId)
               : undefined;
+            const alternate = alternateStockFor(item);
             const message = messageFor(item);
             return (
               <article
@@ -5995,6 +6151,16 @@ function PendingMedicationRecords({
                     <dt>Branch</dt>
                     <dd>{getBranchName(db, item.branchId)}</dd>
                   </div>
+                  {alternate && (
+                    <div>
+                      <dt>Available elsewhere</dt>
+                      <dd>
+                        {alternate.branch.name} /{" "}
+                        {number.format(alternate.quantity)}{" "}
+                        {item.unit || "unit"}
+                      </dd>
+                    </div>
+                  )}
                   <div>
                     <dt>Requested</dt>
                     <dd>
@@ -6024,6 +6190,29 @@ function PendingMedicationRecords({
                     </dd>
                   </div>
                 </dl>
+                {alternate && item.status !== "available" && (
+                  <div className="pending-continuity-note">
+                    <MapPin size={16} />
+                    <span>
+                      Matched at {alternate.branch.name}
+                      {item.matchedAt
+                        ? ` since ${new Date(item.matchedAt).toLocaleString()}`
+                        : ""}
+                      . Patient may be guided to that site or staff may arrange
+                      transfer. Keep this request pending until stock is
+                      received here.
+                    </span>
+                    {alternate.mapHref && (
+                      <a
+                        href={alternate.mapHref}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Map
+                      </a>
+                    )}
+                  </div>
+                )}
                 {item.status === "available" && (
                   <div className="form-success">
                     Available since{" "}
@@ -7257,6 +7446,7 @@ function POSView({
   currentUser,
   activeBranch,
   stockRows,
+  workspaceStockRows,
   canSell,
   executeAction,
   flash,
@@ -7265,6 +7455,7 @@ function POSView({
   currentUser: User;
   activeBranch: Branch;
   stockRows: StockRow[];
+  workspaceStockRows: StockRow[];
   canSell: boolean;
   executeAction: ExecuteAction;
   flash: (message: string) => void;
@@ -7387,6 +7578,39 @@ function POSView({
     })
     .slice(0, 16);
   const visibleSaleOptions = query.trim() ? saleOptions : frequentlySoldOptions;
+  const unavailableMedicineMatches = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    if (needle.length < 2) return [];
+    return db.medicines
+      .filter((medicine) => {
+        if (!medicine.active) return false;
+        if ((stockByMedicine.get(medicine.id) ?? 0) > 0) return false;
+        const text = [
+          medicine.brandName,
+          medicine.genericName,
+          medicine.form,
+          medicine.strength,
+          medicine.sku,
+          medicine.nafdacNumber,
+          ...medicine.barcodes,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return text.includes(needle);
+      })
+      .map((medicine) => ({
+        medicine,
+        branches: getMedicineBranchAvailability(
+          db,
+          workspaceStockRows,
+          medicine.id,
+          activeBranch,
+        ).filter((entry) => entry.branch.id !== activeBranch.id),
+      }))
+      .filter((entry) => entry.branches.length > 0)
+      .slice(0, 4);
+  }, [activeBranch, db, query, stockByMedicine, workspaceStockRows]);
   const cartRows = cart.map((item) => {
     const option =
       saleOptions.find(
@@ -8031,6 +8255,74 @@ function POSView({
                 </div>
               )}
             </div>
+            {unavailableMedicineMatches.length > 0 && (
+              <div className="pos-site-options">
+                <div className="pos-site-options-heading">
+                  <div>
+                    <strong>Available at another clinic site</strong>
+                    <span>
+                      Search matched medicines with no stock at{" "}
+                      {activeBranch.name}. Add as pending, then guide the
+                      patient or arrange site transfer.
+                    </span>
+                  </div>
+                </div>
+                <div className="pos-site-option-list">
+                  {unavailableMedicineMatches.map((entry) => (
+                    <article
+                      className="pos-site-option"
+                      key={entry.medicine.id}
+                    >
+                      <header>
+                        <div>
+                          <strong>{medicineOptionLabel(entry.medicine)}</strong>
+                          <span>{medicineMeta(entry.medicine)}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => addItem("medicine", entry.medicine.id)}
+                          disabled={!canSell}
+                        >
+                          Add as pending
+                        </button>
+                      </header>
+                      <div className="branch-availability-list">
+                        {entry.branches.slice(0, 3).map((branchOption) => (
+                          <div
+                            className="branch-availability-row"
+                            key={branchOption.branch.id}
+                          >
+                            <MapPin size={15} />
+                            <span>
+                              <strong>{branchOption.branch.name}</strong>
+                              <small>
+                                {medicineStockLabel(
+                                  entry.medicine,
+                                  branchOption.quantity,
+                                )}{" "}
+                                available
+                                {branchOption.branch.address
+                                  ? ` / ${branchOption.branch.address}`
+                                  : ""}
+                              </small>
+                            </span>
+                            {branchOption.mapHref && (
+                              <a
+                                href={branchOption.mapHref}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Map
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
 
           <aside className="pos-sale-cart">
@@ -8595,6 +8887,22 @@ function PatientsView({
         body: saleFollowUpBody(db, sale),
       }))
       .filter((message) => message.body) ?? [];
+  const selectedPendingMedications =
+    selectedProfile
+      ? db.pendingMedications
+          .filter((item) => {
+            if (item.status === "fulfilled" || item.status === "cancelled")
+              return false;
+            const profilePhone = normalizePhone(selectedProfile.phone);
+            const itemPhone = normalizePhone(item.patientPhone);
+            if (profilePhone && itemPhone) return profilePhone === itemPhone;
+            return (
+              item.patientName.trim().toLowerCase() ===
+              selectedProfile.name.trim().toLowerCase()
+            );
+          })
+          .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      : [];
 
   async function copyMessage(message: string) {
     try {
@@ -8714,6 +9022,35 @@ function PatientsView({
                   </div>
                   <strong>{money.format(selectedProfile.totalSpent)}</strong>
                 </header>
+
+                {selectedPendingMedications.length > 0 && (
+                  <section className="patient-continuity-strip">
+                    <div>
+                      <span className="eyebrow">Continuity watch</span>
+                      <strong>
+                        {selectedPendingMedications.length} active pending
+                        medicine
+                        {selectedPendingMedications.length === 1 ? "" : "s"}
+                      </strong>
+                    </div>
+                    <div className="patient-continuity-list">
+                      {selectedPendingMedications.slice(0, 3).map((item) => (
+                        <article key={item.id}>
+                          <span>
+                            {item.medicationName} /{" "}
+                            {pendingMedicationStatusLabels[item.status]}
+                          </span>
+                          <small>
+                            Requested at {getBranchName(db, item.branchId)}
+                            {item.matchedBranchId
+                              ? ` / found at ${getBranchName(db, item.matchedBranchId)}`
+                              : ""}
+                          </small>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                )}
 
                 <div className="patient-profile-grid">
                   <section>

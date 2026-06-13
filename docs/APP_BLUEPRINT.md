@@ -14,6 +14,8 @@ The core promise is:
 - Pharmacist-led prescription dispensing and patient medication history.
 - Pharmacy technician inventory management.
 - Automatic Pending Medication records when prescribed medicines cannot be supplied.
+- Branch-aware Prescription Continuity that can suggest another Totalenergies clinic site with stock while keeping fulfillment tied to actual dispensing.
+- Smart grouped alerts for continuity work, avoiding one noisy alert per medicine line.
 - Audit-friendly reports and operational traceability.
 - Role and branch access that preserves Totalenergies internal authority.
 
@@ -31,7 +33,7 @@ Pharmacy Inventory should be implemented as focused modules:
    Automatic records from prescription lines saved with `0` supplied quantity because stock is unavailable. This module must not become a manual retail backorder tool.
 
 4. **Patient Continuity**
-   Patient lookup, medication history, refill timing, follow-up notes, and Pending Medication records inside the patient page.
+   Patient lookup, medication history, refill timing, follow-up notes, Pending Medication records inside the patient page, and a Prescription Continuity centre for unresolved medicines.
 
 5. **Clinical Safety Support**
    Future pharmacist-assistive checks such as duplicate therapy, repeated antibiotic use, drug interaction prompts, and counseling reminders. This should support professional review, not diagnose or replace clinical judgment.
@@ -91,6 +93,9 @@ Totalenergies already has an EMR. Pharmacy Inventory may support export or hando
 - If a pharmacist saves a prescribed medicine with `0` supplied quantity because stock is unavailable, the app creates a Pending Medication record automatically.
 - Pending Medication records should live with the patient workflow and preserve useful clinical/pharmacy context.
 - Manual `Mark available` should not exist. Availability should be triggered by matching received stock in the correct branch/site.
+- If another Totalenergies clinic site has stock, the record may show a branch-aware "available elsewhere" suggestion with quantity and map context, but the record should remain pending for the original site.
+- Alternate-site availability should support patient guidance or site-transfer coordination. It must not deduct stock or mark the original request fulfillable by itself.
+- Continuity notifications should be grouped and branch-scoped so pharmacists receive useful prompts without alert fatigue.
 - Fulfillment still needs actual dispensing through Prescriptions so stock deduction remains accurate.
 
 ## Design Rules

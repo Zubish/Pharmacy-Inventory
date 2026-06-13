@@ -1432,6 +1432,32 @@ td span,
   opacity: 0.55;
 }
 
+.pending-continuity-note {
+  align-items: center;
+  background: #eef8f6;
+  border: 1px solid #cfe5e1;
+  border-radius: 8px;
+  color: #22474d;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 13px;
+  gap: 9px;
+  padding: 10px;
+}
+
+.pending-continuity-note span {
+  flex: 1 1 220px;
+}
+
+.pending-continuity-note a {
+  border: 1px solid #b8d8d3;
+  border-radius: 8px;
+  color: #0b5c4a;
+  font-weight: 800;
+  padding: 6px 9px;
+  text-decoration: none;
+}
+
 .alert-list,
 .audit-list,
 .supplier-grid,
@@ -2300,6 +2326,87 @@ td strong {
 .pos-card-tag.warn {
   background: #fff1c8;
   color: #d28a00;
+}
+
+.pos-site-options {
+  border-top: 1px solid #e1ebea;
+  display: grid;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.pos-site-options-heading,
+.pos-site-option header,
+.branch-availability-row {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.pos-site-options-heading span,
+.pos-site-option header span,
+.branch-availability-row small {
+  color: #53646a;
+  display: block;
+  font-size: 12px;
+}
+
+.pos-site-option-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pos-site-option {
+  background: #f8fbfa;
+  border: 1px solid #d9e7e5;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.pos-site-option button {
+  background: #0e6a56;
+  border: 0;
+  border-radius: 8px;
+  color: #ffffff;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 8px 10px;
+}
+
+.pos-site-option button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.branch-availability-list {
+  display: grid;
+  gap: 8px;
+}
+
+.branch-availability-row {
+  background: #ffffff;
+  border: 1px solid #e1eceb;
+  border-radius: 8px;
+  padding: 9px;
+}
+
+.branch-availability-row span {
+  flex: 1 1 180px;
+}
+
+.branch-availability-row a {
+  border: 1px solid #c8dcda;
+  border-radius: 8px;
+  color: #0b5c4a;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 6px 8px;
+  text-decoration: none;
 }
 
 .pos-sale-cart {
@@ -3237,6 +3344,49 @@ td strong {
 .patient-profile-header > strong {
   color: #006b45;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.patient-continuity-strip {
+  background: #f2faf7;
+  border: 1px solid #cfe5df;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.patient-continuity-strip > div:first-child {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.patient-continuity-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.patient-continuity-list article {
+  background: #ffffff;
+  border: 1px solid #d9ebe7;
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+}
+
+.patient-continuity-list span {
+  color: #183238;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.patient-continuity-list small {
+  color: #5d7077;
+  font-size: 12px;
 }
 
 .patient-profile-grid {
@@ -4979,12 +5129,15 @@ button:disabled {
   .pos-payment-block > div,
   .pos-customer-panel,
   .pos-action-row,
+  .pos-site-options-heading,
+  .pos-site-option header,
   .pos-search-row,
   .pos-period-filter,
   .pos-sales-summary,
   .pos-care-fields,
   .patients-layout,
   .patient-profile-grid,
+  .patient-continuity-list,
   .patient-reminder-list article,
   .patient-care-queue,
   .pricing-settings-grid,

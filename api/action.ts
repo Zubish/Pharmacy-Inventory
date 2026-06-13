@@ -732,6 +732,21 @@ function getMedicineAvailableInBranch(
     );
 }
 
+function getMedicineBranchAvailability(
+  db: Database,
+  medicineId: string,
+  excludeBranchId = "",
+) {
+  return db.branches
+    .filter((branch) => branch.active && branch.id !== excludeBranchId)
+    .map((branch) => ({
+      branchId: branch.id,
+      quantity: getMedicineAvailableInBranch(db, medicineId, branch.id),
+    }))
+    .filter((entry) => entry.quantity > 0)
+    .sort((a, b) => b.quantity - a.quantity);
+}
+
 function pendingMatchesMedicine(
   pending: PendingMedication,
   medicine: Medicine,
@@ -787,7 +802,8 @@ function flagPendingMedicationsAvailable(
   if (!medicines.length) return;
   const updated: PendingMedication[] = [];
   db.pendingMedications.forEach((pending) => {
-    if (pending.branchId !== branchId || pending.status !== "pending") return;
+    if (pending.status !== "pending" && pending.status !== "contacted")
+      return;
     const medicine = medicines.find((item) =>
       pendingMatchesMedicine(pending, item),
     );
@@ -800,15 +816,27 @@ function flagPendingMedicationsAvailable(
     if (availableQuantity <= 0) return;
     const before = { ...pending };
     pending.medicineId = pending.medicineId || medicine.id;
-    pending.status = "available";
-    pending.availableAt = nowIso();
-    pending.updatedAt = pending.availableAt;
-    pending.availableQuantity = availableQuantity;
+    if (pending.branchId === branchId) {
+      pending.status = "available";
+      pending.availableAt = nowIso();
+      pending.updatedAt = pending.availableAt;
+      pending.availableQuantity = availableQuantity;
+      pending.matchedBranchId = undefined;
+      pending.availableElsewhereQuantity = undefined;
+      pending.matchedAt = undefined;
+    } else {
+      pending.matchedBranchId = branchId;
+      pending.availableElsewhereQuantity = availableQuantity;
+      pending.matchedAt = nowIso();
+      pending.updatedAt = pending.matchedAt;
+    }
     updated.push({ ...pending });
     addAudit(
       db,
       actorId,
-      `Flagged pending medication available for ${pending.patientName}`,
+      pending.branchId === branchId
+        ? `Flagged pending medication available for ${pending.patientName}`
+        : `Matched pending medication available at another clinic site for ${pending.patientName}`,
       "pending-medication",
       pending.id,
       before,
@@ -819,7 +847,7 @@ function flagPendingMedicationsAvailable(
     addAudit(
       db,
       actorId,
-      `Matched ${updated.length} pending medication request${updated.length === 1 ? "" : "s"} after stock receipt`,
+      `Matched ${updated.length} pending medication request${updated.length === 1 ? "" : "s"} after stock movement`,
       "pending-medication",
       updated[0].id,
       undefined,
@@ -869,6 +897,9 @@ function updatePendingMedication(
   if (status === "pending") {
     pending.availableAt = undefined;
     pending.availableQuantity = undefined;
+    pending.matchedBranchId = undefined;
+    pending.availableElsewhereQuantity = undefined;
+    pending.matchedAt = undefined;
     pending.contactedAt = undefined;
     pending.fulfilledAt = undefined;
     pending.cancelledAt = undefined;
@@ -937,10 +968,21 @@ function recordPendingMedicationFromPrescription(
         normalizeSearchText(patientPhone),
   );
   const now = nowIso();
+  const alternateBranch = getMedicineBranchAvailability(
+    db,
+    medicine.id,
+    branchId,
+  )[0];
   if (existing) {
     const before = { ...existing };
     existing.quantity = Math.max(existing.quantity, quantityNeeded);
     existing.sourceNote = sourceParts.join(" ");
+    existing.preferredBranchId = existing.preferredBranchId || branchId;
+    if (alternateBranch) {
+      existing.matchedBranchId = alternateBranch.branchId;
+      existing.availableElsewhereQuantity = alternateBranch.quantity;
+      existing.matchedAt = now;
+    }
     existing.updatedAt = now;
     addAudit(
       db,
@@ -970,6 +1012,10 @@ function recordPendingMedicationFromPrescription(
     recordedBy: actorId,
     requestedAt: now,
     updatedAt: now,
+    preferredBranchId: branchId,
+    matchedBranchId: alternateBranch?.branchId,
+    availableElsewhereQuantity: alternateBranch?.quantity,
+    matchedAt: alternateBranch ? now : undefined,
   };
   db.pendingMedications.unshift(record);
   addAudit(

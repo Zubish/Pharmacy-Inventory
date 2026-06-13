@@ -206,6 +206,10 @@ export type PendingMedication = {
   recordedBy: string;
   requestedAt: string;
   updatedAt: string;
+  preferredBranchId?: string;
+  matchedBranchId?: string;
+  availableElsewhereQuantity?: number;
+  matchedAt?: string;
   availableAt?: string;
   availableQuantity?: number;
   contactedAt?: string;

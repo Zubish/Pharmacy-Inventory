@@ -100,6 +100,21 @@ assertPresent(
   /flagPendingMedicationsAvailable[\s\S]*batch\.branchId/,
   "Positive stock movement should automatically check pending medication availability.",
 );
+assertPresent(
+  action,
+  /matchedBranchId[\s\S]*availableElsewhereQuantity[\s\S]*matchedAt/,
+  "Pending medication records should preserve alternate clinic-site stock matches without changing availability status.",
+);
+assertPresent(
+  app,
+  /pending-medication-available-\$\{latest\.branchId\}[\s\S]*pending-medication-elsewhere-\$\{latest\.branchId\}/,
+  "Prescription Continuity alerts should be grouped by branch context instead of one alert per medicine line.",
+);
+assertPresent(
+  app,
+  /Available at another clinic site[\s\S]*Add as pending[\s\S]*Map/,
+  "Unavailable prescription search should suggest alternate Totalenergies clinic sites with map guidance.",
+);
 
 assertPresent(
   app,

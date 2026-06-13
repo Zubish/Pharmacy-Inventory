@@ -39,8 +39,10 @@ Includes:
 
 - Automatic record creation from prescription lines saved with `0` supplied quantity.
 - Patient, medicine, quantity needed, branch/site, staff, note, and linked product context.
-- Status flow for pending, available, contacted, fulfilled, cancelled, expired, not picked up, and not interested.
+- Status flow for pending, available, contacted, fulfilled, and cancelled.
 - Automatic availability flagging when matching stock is received in the same branch/site.
+- Branch-aware "available elsewhere" context when another Totalenergies clinic site has matching stock.
+- Map/list guidance for the closest useful clinic site, without marking the original site request fulfillable.
 
 Does not include manual backorder entry.
 
@@ -54,6 +56,8 @@ Includes:
 - Medication history from dispensing records.
 - Refill/follow-up reminders.
 - Pending Medication records inside the patient page.
+- Prescription Continuity context for unresolved medicines when a patient attends another clinic site.
+- Grouped branch-scoped continuity alerts to reduce alert fatigue.
 - Controlled phone visibility for viewer/audit users.
 
 ## 5. Clinical Safety Support
