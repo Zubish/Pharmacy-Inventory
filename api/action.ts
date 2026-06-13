@@ -194,6 +194,49 @@ function normalizePatientPhone(value: string) {
   return value.replace(/\D/g, "");
 }
 
+function normalizePatientRiskContext(
+  value: unknown,
+): NonNullable<Sale["patientRiskContext"]> {
+  const input = (value ?? {}) as Record<string, unknown>;
+  const ageGroup: NonNullable<Sale["patientRiskContext"]>["ageGroup"] =
+    input.ageGroup === "child" ||
+    input.ageGroup === "older_adult" ||
+    input.ageGroup === "adult"
+      ? input.ageGroup
+      : undefined;
+  return {
+    ageGroup,
+    pregnant: Boolean(input.pregnant),
+    renalRisk: Boolean(input.renalRisk),
+    liverRisk: Boolean(input.liverRisk),
+    notes: optionalString(input.notes) || undefined,
+  };
+}
+
+function normalizePatientInfoReliability(value: unknown) {
+  return value === "confirmed_today" ||
+    value === "previous_record" ||
+    value === "incomplete"
+    ? value
+    : "patient_reported";
+}
+
+function normalizePharmacistReviewOutcome(value: unknown) {
+  return value === "counselled" ||
+    value === "doctor_contacted" ||
+    value === "changed_recommendation" ||
+    value === "system_missed" ||
+    value === "dismissed"
+    ? value
+    : "none";
+}
+
+function normalizeSafetyReviewSummary(value: unknown) {
+  return Array.isArray(value)
+    ? value.map((item) => optionalString(item)).filter(Boolean).slice(0, 8)
+    : [];
+}
+
 function normalizeSubscriptionPlanId(
   value: unknown,
   fallback: SubscriptionPlanId,
@@ -2301,11 +2344,22 @@ function recordSale(
     dispensedByUserId: actorId,
     customerName: optionalString(payload?.customerName),
     customerPhone: optionalString(payload?.customerPhone),
+    patientInfoReliability: normalizePatientInfoReliability(
+      payload?.patientInfoReliability,
+    ),
+    patientRiskContext: normalizePatientRiskContext(payload?.patientRiskContext),
     paymentMethod: (optionalString(payload?.paymentMethod) ||
       "cash") as Sale["paymentMethod"],
     reference,
     note: optionalString(payload?.note),
     followUpMessage: optionalString(payload?.followUpMessage),
+    pharmacistReviewOutcome: normalizePharmacistReviewOutcome(
+      payload?.pharmacistReviewOutcome,
+    ),
+    pharmacistReviewNote: optionalString(payload?.pharmacistReviewNote),
+    safetyReviewSummary: normalizeSafetyReviewSummary(
+      payload?.safetyReviewSummary,
+    ),
     soldAt: nowIso(),
     subtotal,
     discount,

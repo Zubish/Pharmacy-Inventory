@@ -117,6 +117,21 @@ assertPresent(
 );
 assertPresent(
   app,
+  /Pharmacist Safety Review/,
+  "Pharmacy Inventory should expose explainable pharmacist safety review prompts inside Prescriptions.",
+);
+assertPresent(
+  app,
+  /buildPharmacistSafetyReview[\s\S]*why:/,
+  "Pharmacy Inventory safety prompts should explain why they appeared.",
+);
+assertPresent(
+  action,
+  /pharmacistReviewOutcome[\s\S]*safetyReviewSummary/,
+  "Pharmacy Inventory should persist pharmacist review outcome and prompt summary.",
+);
+assertPresent(
+  app,
   /\|\s*"continuity"[\s\S]*\{ id: "continuity", label: "Continuity"/,
   "Pharmacy Inventory should expose Prescription Continuity as a separate page.",
 );

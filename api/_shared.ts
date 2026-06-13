@@ -14,6 +14,26 @@ type Designation =
   | "pharmacist"
   | "pharmacy_technician";
 type UserStatus = "pending" | "active" | "suspended";
+type PatientInfoReliability =
+  | "confirmed_today"
+  | "patient_reported"
+  | "previous_record"
+  | "incomplete";
+type PatientAgeGroup = "child" | "adult" | "older_adult";
+type PharmacistReviewOutcome =
+  | "none"
+  | "counselled"
+  | "doctor_contacted"
+  | "changed_recommendation"
+  | "system_missed"
+  | "dismissed";
+type PatientRiskContext = {
+  ageGroup?: PatientAgeGroup;
+  pregnant?: boolean;
+  renalRisk?: boolean;
+  liverRisk?: boolean;
+  notes?: string;
+};
 type LedgerType =
   | "stock-in"
   | "stock-out"
@@ -223,10 +243,15 @@ type Sale = {
   dispensedByUserId: string;
   customerName: string;
   customerPhone: string;
+  patientInfoReliability?: PatientInfoReliability;
+  patientRiskContext?: PatientRiskContext;
   paymentMethod: "cash" | "card" | "transfer" | "mixed";
   reference: string;
   note: string;
   followUpMessage?: string;
+  pharmacistReviewOutcome?: PharmacistReviewOutcome;
+  pharmacistReviewNote?: string;
+  safetyReviewSummary?: string[];
   soldAt: string;
   subtotal: number;
   discount: number;
@@ -1094,6 +1119,13 @@ export function normalizeDatabase(raw: Partial<Database>): Database {
         discount,
         total: Number(sale.total) || Math.max(0, subtotal - discount),
         followUpMessage: sale.followUpMessage || undefined,
+        patientInfoReliability: sale.patientInfoReliability || undefined,
+        patientRiskContext: sale.patientRiskContext || undefined,
+        pharmacistReviewOutcome: sale.pharmacistReviewOutcome || undefined,
+        pharmacistReviewNote: sale.pharmacistReviewNote || undefined,
+        safetyReviewSummary: Array.isArray(sale.safetyReviewSummary)
+          ? sale.safetyReviewSummary.filter(Boolean)
+          : undefined,
         items: (sale.items ?? []).map((item) => ({
           itemType: item.itemType || "medicine",
           medicineId: item.medicineId || "",

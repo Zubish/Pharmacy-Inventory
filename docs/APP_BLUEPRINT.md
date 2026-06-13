@@ -37,6 +37,7 @@ Pharmacy Inventory should be implemented as focused modules:
 
 5. **Clinical Safety Support**
    Future pharmacist-assistive checks such as duplicate therapy, repeated antibiotic use, drug interaction prompts, and counseling reminders. This should support professional review, not diagnose or replace clinical judgment.
+   The live Pharmacist Safety Review layer should stay deterministic, explain why each prompt appeared, capture patient information reliability/risk context, and persist pharmacist outcome notes on dispensing records.
 
 6. **Audit, Access, And Governance**
    Users, branch/site access, viewer restrictions, security events, audit history, reports, and settings.

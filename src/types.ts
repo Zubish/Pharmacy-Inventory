@@ -4,6 +4,26 @@ export type Designation =
   | "pharmacist"
   | "pharmacy_technician";
 export type UserStatus = "pending" | "active" | "suspended";
+export type PatientInfoReliability =
+  | "confirmed_today"
+  | "patient_reported"
+  | "previous_record"
+  | "incomplete";
+export type PatientAgeGroup = "child" | "adult" | "older_adult";
+export type PharmacistReviewOutcome =
+  | "none"
+  | "counselled"
+  | "doctor_contacted"
+  | "changed_recommendation"
+  | "system_missed"
+  | "dismissed";
+export type PatientRiskContext = {
+  ageGroup?: PatientAgeGroup;
+  pregnant?: boolean;
+  renalRisk?: boolean;
+  liverRisk?: boolean;
+  notes?: string;
+};
 export type LedgerType =
   | "stock-in"
   | "stock-out"
@@ -157,10 +177,15 @@ export type Sale = {
   dispensedByUserId: string;
   customerName: string;
   customerPhone: string;
+  patientInfoReliability?: PatientInfoReliability;
+  patientRiskContext?: PatientRiskContext;
   paymentMethod: "cash" | "card" | "transfer" | "mixed";
   reference: string;
   note: string;
   followUpMessage?: string;
+  pharmacistReviewOutcome?: PharmacistReviewOutcome;
+  pharmacistReviewNote?: string;
+  safetyReviewSummary?: string[];
   soldAt: string;
   subtotal: number;
   discount: number;
