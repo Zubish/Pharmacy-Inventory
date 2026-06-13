@@ -1967,8 +1967,9 @@ function canSellInBranch(db: Database, actor: User, branchId: string) {
   );
 }
 
-function canCompleteSaleInBranch(actor: User, branchId: string) {
+function canCompleteSaleInBranch(actor: User, branchId: string, primaryAdminId: string) {
   return (
+    canAdmin(actor, primaryAdminId) ||
     actor.role === "pharmacist" && hasActiveBranchAssignment(actor, branchId)
   );
 }
@@ -2027,7 +2028,13 @@ function recordSale(
     throw new Error("Active branch not found");
   if (!canSellInBranch(db, { ...actor, role: actorRole }, branchId))
     throw new Error("You do not have permission to dispense in this site");
-  if (!canCompleteSaleInBranch({ ...actor, role: actorRole }, branchId))
+  if (
+    !canCompleteSaleInBranch(
+      { ...actor, role: actorRole },
+      branchId,
+      getPrimaryAdminId(db),
+    )
+  )
     throw new Error("Only assigned pharmacists can dispense medicines");
   const inputs = normalizePrescriptionItems(payload?.items);
   if (!inputs.length)

@@ -7659,8 +7659,9 @@ function POSView({
       .filter(Boolean),
   ).size;
   const canDispense =
-    currentUser.role === "pharmacist" &&
-    hasActiveBranchAssignment(currentUser, activeBranch.id);
+    isSuperAdmin(db, currentUser) ||
+    (currentUser.role === "pharmacist" &&
+      hasActiveBranchAssignment(currentUser, activeBranch.id));
   const patientProfiles = useMemo(() => buildPatientProfiles(db), [db]);
   const selectedPatient = useMemo(() => {
     const phone = normalizePhone(customerPhone);

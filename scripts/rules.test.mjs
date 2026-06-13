@@ -138,6 +138,16 @@ assertPresent(
   /designation: event\.target\.value as Designation/,
   "Permanent admin should still be able to update designation from user management.",
 );
+assertPresent(
+  app,
+  /const canDispense =[\s\S]*isSuperAdmin\(db, currentUser\)[\s\S]*currentUser\.role === "pharmacist"/,
+  "The Superintendent Pharmacist/permanent admin should be allowed to dispense even without branch pharmacist assignment.",
+);
+assertPresent(
+  action,
+  /function canCompleteSaleInBranch\([\s\S]*primaryAdminId[\s\S]*canAdmin\(actor, primaryAdminId\)[\s\S]*actor\.role === "pharmacist"/,
+  "Backend dispensing permission should allow the permanent admin as the highest access user.",
+);
 assertAbsent(
   app,
   /Software name\s*<input/,
