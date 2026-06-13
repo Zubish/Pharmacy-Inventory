@@ -132,6 +132,21 @@ assertPresent(
 );
 assertPresent(
   app,
+  /Allergies or reactions[\s\S]*Current\/chronic medicines/,
+  "Pharmacy Inventory safety review should include allergy, chronic medicine, and controlled medicine context.",
+);
+assertPresent(
+  app,
+  /Controlled\/monitored medicine review/,
+  "Pharmacy Inventory safety review should flag controlled or monitored medicine context.",
+);
+assertPresent(
+  app,
+  /transferred: "Transfer requested"[\s\S]*Request transfer/,
+  "Pharmacy Inventory Prescription Continuity should support transfer-request status without marking local stock fulfilled.",
+);
+assertPresent(
+  app,
   /\|\s*"continuity"[\s\S]*\{ id: "continuity", label: "Continuity"/,
   "Pharmacy Inventory should expose Prescription Continuity as a separate page.",
 );

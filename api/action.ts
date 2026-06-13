@@ -209,6 +209,8 @@ function normalizePatientRiskContext(
     pregnant: Boolean(input.pregnant),
     renalRisk: Boolean(input.renalRisk),
     liverRisk: Boolean(input.liverRisk),
+    allergies: optionalString(input.allergies) || undefined,
+    chronicMedicines: optionalString(input.chronicMedicines) || undefined,
     notes: optionalString(input.notes) || undefined,
   };
 }
@@ -754,6 +756,7 @@ function canManagePendingMedication(
 function normalizePendingStatus(value: unknown): PendingMedicationStatus {
   return value === "available" ||
     value === "contacted" ||
+    value === "transferred" ||
     value === "fulfilled" ||
     value === "cancelled"
     ? value

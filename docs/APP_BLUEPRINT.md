@@ -38,6 +38,7 @@ Pharmacy Inventory should be implemented as focused modules:
 5. **Clinical Safety Support**
    Future pharmacist-assistive checks such as duplicate therapy, repeated antibiotic use, drug interaction prompts, and counseling reminders. This should support professional review, not diagnose or replace clinical judgment.
    The live Pharmacist Safety Review layer should stay deterministic, explain why each prompt appeared, capture patient information reliability/risk context, and persist pharmacist outcome notes on dispensing records.
+   Allergy/current medicine context should support pharmacist review prompts only; it should not become an autonomous clinical decision engine.
 
 6. **Audit, Access, And Governance**
    Users, branch/site access, viewer restrictions, security events, audit history, reports, and settings.
@@ -99,6 +100,7 @@ Totalenergies already has an EMR. Pharmacy Inventory may support export or hando
 - Manual `Mark available` should not exist. Availability should be triggered by matching received stock in the correct branch/site.
 - If another Totalenergies clinic site has stock, the record may show a branch-aware "available elsewhere" suggestion with quantity and map context, but the record should remain pending for the original site.
 - Alternate-site availability should support patient guidance or site-transfer coordination. It must not deduct stock or mark the original request fulfillable by itself.
+- Transfer requested is a Prescription Continuity queue state only. Fulfillment still requires an actual Prescriptions dispensing record so stock and cost remain accurate.
 - Continuity notifications should be grouped and branch-scoped so pharmacists receive useful prompts without alert fatigue.
 - Fulfillment still needs actual dispensing through Prescriptions so stock deduction remains accurate.
 

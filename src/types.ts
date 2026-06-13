@@ -22,6 +22,8 @@ export type PatientRiskContext = {
   pregnant?: boolean;
   renalRisk?: boolean;
   liverRisk?: boolean;
+  allergies?: string;
+  chronicMedicines?: string;
   notes?: string;
 };
 export type LedgerType =
@@ -211,6 +213,7 @@ export type PendingMedicationStatus =
   | "pending"
   | "available"
   | "contacted"
+  | "transferred"
   | "fulfilled"
   | "cancelled";
 

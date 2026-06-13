@@ -32,6 +32,8 @@ type PatientRiskContext = {
   pregnant?: boolean;
   renalRisk?: boolean;
   liverRisk?: boolean;
+  allergies?: string;
+  chronicMedicines?: string;
   notes?: string;
 };
 type LedgerType =
@@ -277,6 +279,7 @@ type PendingMedicationStatus =
   | "pending"
   | "available"
   | "contacted"
+  | "transferred"
   | "fulfilled"
   | "cancelled";
 

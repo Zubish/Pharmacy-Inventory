@@ -102,6 +102,8 @@ type PatientRiskContext = {
   pregnant?: boolean;
   renalRisk?: boolean;
   liverRisk?: boolean;
+  allergies?: string;
+  chronicMedicines?: string;
   notes?: string;
 };
 type SubscriptionPlanId = "single-branch" | "smart-pharmacy" | "enterprise";
@@ -307,6 +309,7 @@ type PendingMedicationStatus =
   | "pending"
   | "available"
   | "contacted"
+  | "transferred"
   | "fulfilled"
   | "cancelled";
 
@@ -619,6 +622,7 @@ const pendingMedicationStatusLabels: Record<PendingMedicationStatus, string> = {
   pending: "Pending",
   available: "Available",
   contacted: "Contacted",
+  transferred: "Transfer requested",
   fulfilled: "Fulfilled",
   cancelled: "Cancelled",
 };
@@ -1576,6 +1580,44 @@ function buildPharmacistSafetyReview(
       why: "Triggered by the patient information reliability selected for this dispensing.",
     });
   }
+  if (risk.allergies?.trim()) {
+    const allergyText = risk.allergies.toLowerCase();
+    medicines.forEach((medicine) => {
+      const text = medicineSafetyText(medicine);
+      const terms = [
+        medicine.brandName,
+        medicine.genericName,
+        medicine.category,
+      ]
+        .filter(Boolean)
+        .flatMap((value) => value.toLowerCase().split(/[^a-z0-9]+/))
+        .filter((value) => value.length > 3);
+      if (terms.some((term) => allergyText.includes(term) || (text.includes(term) && allergyText.includes(term)))) {
+        add({
+          id: `allergy-${medicine.id}`,
+          tone: "danger",
+          title: "Allergy review recommended",
+          detail: `${medicine.brandName} may match the recorded allergy/context note.`,
+          why: "Triggered because the allergy field overlaps with medicine brand, generic, or category text.",
+        });
+      }
+    });
+  }
+  if (risk.chronicMedicines?.trim()) {
+    const chronicText = risk.chronicMedicines.toLowerCase();
+    medicines.forEach((medicine) => {
+      const generic = medicine.genericName.trim().toLowerCase();
+      if (generic && chronicText.includes(generic)) {
+        add({
+          id: `chronic-duplicate-${medicine.id}`,
+          tone: "warning",
+          title: "Current medicine overlap",
+          detail: `${medicine.brandName} appears similar to a medicine recorded as current/chronic.`,
+          why: "Triggered because the current/chronic medicines field contains the same generic name.",
+        });
+      }
+    });
+  }
   const genericGroups = new Map<string, Medicine[]>();
   medicines.forEach((medicine) => {
     const generic = medicine.genericName.trim().toLowerCase();
@@ -1593,6 +1635,7 @@ function buildPharmacistSafetyReview(
   });
   const antibioticTerms = ["amoxicillin", "azithromycin", "ciprofloxacin", "cef", "doxycycline", "metronidazole", "clavulanate", "levofloxacin"];
   const highRiskTerms = ["warfarin", "insulin", "lithium", "digoxin", "methotrexate", "tramadol", "morphine", "diazepam", "clonazepam"];
+  const controlledTerms = ["tramadol", "morphine", "codeine", "diazepam", "clonazepam", "alprazolam", "phenobarbital", "pregabalin", "gabapentin", "zolpidem"];
   const hasAntibiotic = medicines.some((medicine) => includesAny(medicineSafetyText(medicine), antibioticTerms));
   if (hasAntibiotic) {
     const recentAntibiotic = previousSales.some((sale) => {
@@ -1623,6 +1666,14 @@ function buildPharmacistSafetyReview(
         title: "High-risk medicine review",
         detail: `${medicine.brandName} may need dose confirmation, counselling, or monitoring context.`,
         why: "Triggered by a high-risk medicine keyword in catalog fields.",
+      });
+    if (includesAny(text, controlledTerms))
+      add({
+        id: `controlled-${medicine.id}`,
+        tone: "warning",
+        title: "Controlled/monitored medicine review",
+        detail: `${medicine.brandName} may require prescription validity, refill timing, or misuse-risk documentation.`,
+        why: "Triggered by a controlled/monitored medicine keyword in catalog fields.",
       });
     if (text.includes("metronidazole"))
       add({
@@ -6168,7 +6219,8 @@ function PendingMedicationRecords({
     (item) =>
       item.status === "pending" ||
       item.status === "available" ||
-      item.status === "contacted",
+      item.status === "contacted" ||
+      item.status === "transferred",
   ).length;
   const availableCount = branchRecords.filter(
     (item) => item.status === "available",
@@ -6262,6 +6314,7 @@ function PendingMedicationRecords({
     if (status === "fulfilled") return "active";
     if (status === "cancelled") return "expired";
     if (status === "contacted") return "warning";
+    if (status === "transferred") return "warning";
     return "muted";
   }
 
@@ -6436,8 +6489,20 @@ function PendingMedicationRecords({
                       Contacted
                     </button>
                   )}
+                  {alternate &&
+                    (item.status === "pending" ||
+                      item.status === "contacted") && (
+                      <button
+                        type="button"
+                        onClick={() => updateStatus(item, "transferred")}
+                        disabled={!canManage}
+                      >
+                        Request transfer
+                      </button>
+                    )}
                   {(item.status === "available" ||
-                    item.status === "contacted") && (
+                    item.status === "contacted" ||
+                    item.status === "transferred") && (
                     <button
                       type="button"
                       onClick={() => updateStatus(item, "fulfilled")}
@@ -6448,7 +6513,8 @@ function PendingMedicationRecords({
                   )}
                   {(item.status === "pending" ||
                     item.status === "available" ||
-                    item.status === "contacted") && (
+                    item.status === "contacted" ||
+                    item.status === "transferred") && (
                     <button
                       type="button"
                       onClick={() => updateStatus(item, "cancelled")}
@@ -8924,6 +8990,34 @@ function POSView({
                       {label}
                     </label>
                   ))}
+                  <label className="full">
+                    Allergies or reactions
+                    <input
+                      value={patientRiskContext.allergies ?? ""}
+                      onChange={(event) =>
+                        setPatientRiskContext((current) => ({
+                          ...current,
+                          allergies: event.target.value,
+                        }))
+                      }
+                      placeholder="Example: penicillin rash, NSAID reaction"
+                      disabled={!canSell}
+                    />
+                  </label>
+                  <label className="full">
+                    Current/chronic medicines
+                    <input
+                      value={patientRiskContext.chronicMedicines ?? ""}
+                      onChange={(event) =>
+                        setPatientRiskContext((current) => ({
+                          ...current,
+                          chronicMedicines: event.target.value,
+                        }))
+                      }
+                      placeholder="Example: metformin, amlodipine, warfarin"
+                      disabled={!canSell}
+                    />
+                  </label>
                 </div>
                 <div className="safety-prompt-list">
                   {safetyReviewPrompts.length ? (
