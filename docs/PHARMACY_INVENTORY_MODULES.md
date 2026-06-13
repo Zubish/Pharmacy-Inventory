@@ -53,9 +53,10 @@ Purpose: help pharmacy staff remember medication journeys without replacing Tota
 Includes:
 
 - Patient lookup by name, phone, or receipt/reference.
+- Editable patient identity corrections that update matching dispensing and Pending Medication records.
 - Medication history from dispensing records.
 - Refill/follow-up reminders.
-- Pending Medication records inside the patient page.
+- Compact Pending Medication context inside the patient profile.
 - Prescription Continuity context for unresolved medicines when a patient attends another clinic site.
 - Grouped branch-scoped continuity alerts to reduce alert fatigue.
 - Controlled phone visibility for viewer/audit users.

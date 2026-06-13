@@ -74,7 +74,8 @@ Totalenergies already has an EMR. Pharmacy Inventory may support export or hando
 - Suppliers: supplier records and supplied stock history.
 - Receive: medicine stock receiving into the active clinic site.
 - Prescriptions: medicine-only dispensing basket, patient fields, supplied quantities, labels, and dispensing history.
-- Patients: patient lookup, medication history, refill reminders, follow-up messages, and Pending Medication records.
+- Patients: patient lookup, editable patient identity corrections, medication history, refill reminders, and follow-up messages.
+- Continuity: Prescription Continuity/Pending Medication queue, branch-aware availability suggestions, patient follow-up, and fulfillment status.
 - Issue Stock: branch/site stock issue workflow.
 - Adjustments: write-off, returns, and correction posting.
 - Reports: medicine stock on hand, movement ledger, expiry, reorder, dispensing cost, suppliers, CSV/print output.
@@ -92,6 +93,8 @@ Totalenergies already has an EMR. Pharmacy Inventory may support export or hando
 - Dispensing deducts stock from non-expired batches.
 - If a pharmacist saves a prescribed medicine with `0` supplied quantity because stock is unavailable, the app creates a Pending Medication record automatically.
 - Pending Medication records should live with the patient workflow and preserve useful clinical/pharmacy context.
+- The full Prescription Continuity queue should live on its own page, while patient profiles may show compact continuity context.
+- Saved patient profiles can be corrected from the patient page; edits update matching dispensing records and Pending Medication records with an audit entry.
 - Manual `Mark available` should not exist. Availability should be triggered by matching received stock in the correct branch/site.
 - If another Totalenergies clinic site has stock, the record may show a branch-aware "available elsewhere" suggestion with quantity and map context, but the record should remain pending for the original site.
 - Alternate-site availability should support patient guidance or site-transfer coordination. It must not deduct stock or mark the original request fulfillable by itself.

@@ -115,6 +115,31 @@ assertPresent(
   /Available at another clinic site[\s\S]*Add as pending[\s\S]*Map/,
   "Unavailable prescription search should suggest alternate Totalenergies clinic sites with map guidance.",
 );
+assertPresent(
+  app,
+  /\|\s*"continuity"[\s\S]*\{ id: "continuity", label: "Continuity"/,
+  "Pharmacy Inventory should expose Prescription Continuity as a separate page.",
+);
+assertPresent(
+  app,
+  /activeView === "continuity"[\s\S]*<PendingMedicationRecords/,
+  "The separate Continuity page should render Pending Medication records.",
+);
+assertPresent(
+  action,
+  /case "updatePatientProfile"[\s\S]*updatePatientProfile[\s\S]*Updated patient profile/,
+  "Pharmacy Inventory should support audited patient profile corrections.",
+);
+assertPresent(
+  app,
+  /Edit profile/,
+  "Pharmacy Inventory patient profiles should be editable from the Patients page.",
+);
+assertPresent(
+  app,
+  /updatePatientProfile[\s\S]*Patient profile updated/,
+  "Pharmacy Inventory patient edit form should call the patient profile update action.",
+);
 
 assertPresent(
   app,
@@ -132,7 +157,11 @@ assertPresent(
   /Staff designation is admin-managed/,
   "Staff should not be able to self-edit designation from Settings.",
 );
-assertAbsent(app, /Save profile/, "Settings must not expose profile saving.");
+assertAbsent(
+  app,
+  /function SettingsView[\s\S]*Save profile/,
+  "Settings must not expose staff profile saving.",
+);
 assertPresent(
   app,
   /designation: event\.target\.value as Designation/,
